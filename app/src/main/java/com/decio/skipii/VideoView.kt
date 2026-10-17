@@ -86,6 +86,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.media3.ui.compose.SURFACE_TYPE_TEXTURE_VIEW
 import kotlinx.coroutines.Job
@@ -114,6 +115,13 @@ fun VideoContent(
     /** False while the player collapses: no controls, and a tap calls [onInactiveTap]. */
     interactive: Boolean = true,
     onInactiveTap: () -> Unit = {},
+    /**
+     * Upright fullscreen: the layer is the whole screen, so the controls and the taps reach its
+     * edges, while the picture keeps the video's own box, centred — [uprightShift] rides it on
+     * the way in and out. Landscape fullscreen fills the screen with the picture instead.
+     */
+    upright: Boolean = false,
+    uprightShift: () -> Float = { 0f },
 ) {
     // Hidden until the video is tapped: opening the player (from the mini-player too) and
     // rotating in or out of fullscreen never pop the controls up.
@@ -203,7 +211,14 @@ fun VideoContent(
             Modifier
                 // As large as fits in whatever box we're given. The portrait stage already has
                 // the video's shape, so bars appear only past its limits (and in fullscreen).
-                .fillMaxSize()
+                .then(
+                    if (upright) Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth()
+                        .aspectRatio(state.stageAspect)
+                        .graphicsLayer { translationY = uprightShift() }
+                    else Modifier.fillMaxSize(),
+                )
                 .aspectFit(state.videoAspect)
                 .clipToBounds(),
         ) {
@@ -533,6 +548,8 @@ fun BoxScope.ScreenGestureHud(gestures: ScreenGestures) {
     Row(
         modifier = Modifier
             .align(Alignment.Center)
+            // Over everything: upright fullscreen's stage sits on top of the page.
+            .zIndex(2f)
             .graphicsLayer { this.alpha = alpha }
             .height(44.dp)
             .clip(CircleShape)

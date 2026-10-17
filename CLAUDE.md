@@ -155,6 +155,14 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
   slides to the middle over the page fading to black, the details drop away, the fullscreen controls swap in
   and the bars hide (`uprightFullscreen` folds into `SystemBarsHidden`). Back, the exit button and a
   middle swipe-down return; rotating keeps it (landscape still wins when the phone is turned).
+- 0.5.22 (2026-10-17): upright fullscreen's controls span the screen. The stage used to stay the
+  video's own box, so its chrome hugged the video's edges; now the stage takes the whole screen there
+  (`VideoStage` gets its box from `PlayerScreen`, `VideoContent`'s `upright`/`uprightShift` keep the
+  picture in the video's own box, centred, and ride the transition's travel) — the top bar sits under
+  the status bar, the scrubber at the screen's bottom, taps answer on all the black, and the gesture
+  HUD stays above it (`zIndex`). The stage only sits over the details once the transition lands, so
+  they still slide away visibly, and the bottom gesture guard is left out there. Landscape and the
+  watch page are unchanged.
 - Themes = Ledgii's (2026-10-05): Wallpaper (default on 12+), Cream Rose, Erica, Lilac Air, Jai,
   Pumpkin, Moonstone, Iris, Harbor + System/Light/Dark, picked in the account sheet's Appearance
   card (`ThemeSettings`, persisted). Palettes in Theme.kt are copied verbatim from

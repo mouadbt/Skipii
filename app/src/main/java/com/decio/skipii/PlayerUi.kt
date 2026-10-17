@@ -148,11 +148,22 @@ fun PlayerScreen(
     val top = remember { statusTopNow }
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     var descriptionOpen by remember(item.id) { mutableStateOf(false) }
+    // The video's own shape, eased in as the real one arrives: the stage lays itself out from
+    // it, and so does the room the details leave for it.
+    val aspect by animateFloatAsState(
+        state.stageAspect,
+        if (reduced) snap() else spring(dampingRatio = 1f, stiffness = 380f),
+        label = "stageAspect",
+    )
     // How far the video's top edge must travel to sit in the middle of the screen, and how
     // far a pull must go to commit — both driven into the transition for its math.
     val config = LocalConfiguration.current
-    val stageHeight = (config.screenWidthDp.dp - StageSideGap * 2) / state.stageAspect
+    val stageHeight = (config.screenWidthDp.dp - StageSideGap * 2) / aspect
     val travel = ((config.screenHeightDp.dp - stageHeight) / 2 - (top + StageTopGap)).coerceAtLeast(0.dp)
+    // Landed in upright fullscreen: the stage owns the whole screen (its controls reach the
+    // edges), so it has to sit over the details. On the way in and out it slides under them,
+    // so they stay visible while they drop away.
+    val uprightLanded by remember { derivedStateOf { state.uprightFullscreen && full.progress.value >= 1f } }
     val density = LocalDensity.current
     SideEffect {
         full.travel = with(density) { travel.toPx() }
@@ -205,11 +216,11 @@ fun PlayerScreen(
                 .graphicsLayer { alpha = ramp(morph.progress.value, DetailsFadeStart) * (1f - ramp(full.progress.value, 0f, 0.6f)) }
                 .background(Brush.verticalGradient(listOf(c.primaryContainer.copy(alpha = 0.75f), c.surface))),
         )
-        ActionMessage(state, Modifier.align(Alignment.BottomCenter).zIndex(1f).padding(bottom = bottom + 24.dp))
+        ActionMessage(state, Modifier.align(Alignment.BottomCenter).zIndex(2f).padding(bottom = bottom + 24.dp))
         Column(Modifier.fillMaxSize()) {
-            Spacer(Modifier.height(top + StageTopGap))
-            // Pinned: the video stays put while the details scroll beneath it.
-            VideoStage(state, morph, full, onCollapse, onFullscreen, interactive && !fullBusy)
+            // The video's room, kept whether or not the stage is in it: upright fullscreen hands
+            // the stage the whole screen, and the details must not move when it does.
+            Spacer(Modifier.height(top + StageTopGap + stageHeight))
             // While collapsing the details are invisible anyway; leaving them out keeps them
             // from catching touches meant for the mini-player.
             if (!showDetails) Spacer(Modifier.weight(1f)) else
@@ -323,9 +334,28 @@ fun PlayerScreen(
                 }
             }
         }
+        // The pinned video: over the page it is the video's own box under the status bar; in
+        // upright fullscreen it takes the whole screen, so its controls reach the screen's
+        // edges and a tap anywhere on the black answers. It stays under everything on the way
+        // in and out ([uprightLanded]) so the details remain visible as they drop away.
+        VideoStage(
+            state = state,
+            morph = morph,
+            full = full,
+            placement = if (state.uprightFullscreen) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier.align(Alignment.TopStart).padding(top = top + StageTopGap)
+                    .fillMaxWidth().aspectRatio(aspect)
+            }.zIndex(if (uprightLanded) 1f else -1f),
+            onCollapse = onCollapse,
+            onFullscreen = onFullscreen,
+            interactive = interactive && !fullBusy,
+        )
         // Swiping home from the bottom edge never scrolls the details (open player only: while
-        // collapsing, touches must still fall through to the mini-player).
-        if (interactive) BottomGestureGuard(Modifier.align(Alignment.BottomCenter))
+        // collapsing, touches must still fall through to the mini-player). Fullscreen leaves it
+        // out: its scrubber sits down there now and has to answer.
+        if (interactive && !state.uprightFullscreen) BottomGestureGuard(Modifier.align(Alignment.BottomCenter))
         // The mini-player's title and buttons travel with the shrinking video and fade in as
         // it lands, so the page turns into the mini-player rather than flying to one.
         MorphingMiniDetails(state, morph)
@@ -346,33 +376,23 @@ fun PlayerScreen(
  * Swiping it down minimizes (the morph). Swiping it up while open goes fullscreen, as in the
  * YouTube app (Derek, 2026-10-10): the video swells under the finger, and past
  * [FullscreenPull] or with a flick it turns to landscape; short of that it eases back.
- * While upright fullscreen holds it ([UprightFullscreen]) the stage rests in the middle of
- * the screen, over the hidden details (so it stays the one thing answering touches), and the
- * side swipes around it run the brightness and volume instead.
+ * While upright fullscreen holds it ([UprightFullscreen]) the stage takes the whole screen so
+ * its controls reach the screen's edges, with the video resting in the middle of the black and
+ * the side swipes around it running the brightness and volume instead.
  */
 @Composable
-private fun VideoStage(state: PlayerState, morph: PlayerMorph, full: UprightFullscreen, onCollapse: () -> Unit, onFullscreen: () -> Unit, interactive: Boolean) {
+private fun VideoStage(state: PlayerState, morph: PlayerMorph, full: UprightFullscreen, placement: Modifier, onCollapse: () -> Unit, onFullscreen: () -> Unit, interactive: Boolean) {
     val reduced = rememberReducedMotion()
     val scope = rememberCoroutineScope()
-    // The height follows the video; when its real shape arrives the change eases in.
-    val aspect by animateFloatAsState(
-        state.stageAspect,
-        if (reduced) snap() else spring(dampingRatio = 1f, stiffness = 380f),
-        label = "stageAspect",
-    )
+    val upright = state.uprightFullscreen
     val pullUp = remember { Animatable(0f) }
     val pullDistance = with(LocalDensity.current) { FullscreenPull.toPx() }
     // Each gesture's first move decides: up on the open player pulls toward fullscreen,
     // anything else drives the morph.
     var decided by remember { mutableStateOf(false) }
     var pulling by remember { mutableStateOf(false) }
-    val stage = Modifier
-        // Upright fullscreen: the video slides down over the (hidden) details, so it must
-        // answer touches over them — and paint over them — too.
-        .zIndex(if (state.uprightFullscreen) 1f else 0f)
+    val stage = placement
         .padding(horizontal = StageSideGap)
-        .fillMaxWidth()
-        .aspectRatio(aspect)
         .graphicsLayer {
             // Rubber band: up to 6% bigger, ever more slowly, growing down from the top edge.
             val k = 1f + 0.06f * (1f - exp(-pullUp.value / (pullDistance * 1.5f)))
@@ -386,8 +406,9 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, full: UprightFull
         .graphicsLayer {
             val g = morph.geometry
             val p = morph.progress.value
-            // Upright fullscreen: from under the status bar to the middle of the screen.
-            val travel = full.travel * full.progress.value
+            // Upright fullscreen: the stage holds the whole screen and stays put; the picture
+            // inside it carries the travel, from under the status bar to the middle.
+            val travel = if (upright) 0f else full.travel * full.progress.value
             if (g != null) {
                 val f = g.videoFrame(size, p)
                 scaleX = f.scale
@@ -448,7 +469,11 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, full: UprightFull
         VideoContent(
             state = state,
             // Fullscreen-style controls while upright fullscreen holds the stage.
-            fullscreen = state.uprightFullscreen,
+            fullscreen = upright,
+            // Their edges are the screen's, not the video's: the picture keeps the video's own
+            // box, centred, and rides the travel, while the controls span everything.
+            upright = upright,
+            uprightShift = { full.travel * (full.progress.value - 1f) },
             interactive = interactive,
             // A tap on the shrinking video brings the player straight back.
             onInactiveTap = { state.expanded = true },
