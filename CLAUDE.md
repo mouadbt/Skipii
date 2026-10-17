@@ -186,6 +186,18 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
   round trip and no chance of an empty library left behind). Reads happen per open; writes run in
   `PlayerState` (`saveToLibrary`/`createLibrary`) so closing the sheet can't cancel them, and confirm
   through the player's own ActionMessage. NOT verified: needs Derek's signed-in account.
+- 0.5.26 (2026-10-17): libraries turn both ways, and can be renamed or deleted. The ticks never
+  showed: `walk` only visits objects that are the value of a key, and `playlistAddToOptionRenderer`
+  sits directly in an array, so `containing` always came back empty and every tap added — it now
+  uses `forEachObject`, which visits those too. On top of that read, `PlayerState.libraryEdits`
+  (video → playlist → in it?) records what the user did successfully, and `PlayerState.librariesFor`
+  is the one source both entry points draw from, so the player's sheet and the long-press options
+  can no longer disagree — and a tick the user just made shows at once even if the save dialog lags.
+  Long-pressing a library in the Library tab opens `PlaylistOptionsSheet` (LibrarySheet.kt): Rename
+  (`browse/edit_playlist`'s `ACTION_SET_PLAYLIST_NAME`) and Delete (`playlist/delete` with
+  `playlistId`), the latter behind an in-sheet confirm, both reusing `LibraryNameForm`'s field
+  (rename prefills it and disables Save until the name changes). Watch later and Liked carry no
+  menu — they are YouTube's own. NOT verified: needs Derek's signed-in account.
 - Themes = Ledgii's (2026-10-05): Wallpaper (default on 12+), Cream Rose, Erica, Lilac Air, Jai,
   Pumpkin, Moonstone, Iris, Harbor + System/Light/Dark, picked in the account sheet's Appearance
   card (`ThemeSettings`, persisted). Palettes in Theme.kt are copied verbatim from
@@ -271,8 +283,9 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
   450 ms fade in; logs "SponsorBlock: skipping …"). UI: scrubber marks, Ask pill, Skipped·Undo.
 - `PlaybackModes.kt` (`PlaybackSpeed`, `AudioOnly`) and `SpeedPanel.kt` (speed/audio buttons, ruler panel, `SpeedHaptics`).
 - `Sheets.kt` — long-press options, queue card + sheet, SponsorBlock settings.
-- `LibrarySheet.kt` — "add to library": the account's playlists with save ticks, and the new-playlist
-  form (shared by the player's sheet and the long-press options).
+- `LibrarySheet.kt` — "add to library": the account's playlists with save ticks; the new/rename name
+  form (shared by the player's sheet and the long-press options); `PlaylistOptionsSheet` (rename,
+  delete) for a library long-pressed in the Library tab.
 - `SecureStore.kt` (Keystore AES-GCM prefs), `SignIn.kt` (WebView sign-in, account sheet),
   `Feeds.kt` (`FeedState` paging, `LibraryData`, `FeedList`).
 - `MainActivity.kt` — shell: tabs, nav capsule, morphing player / fullscreen, sheets, sign-in and

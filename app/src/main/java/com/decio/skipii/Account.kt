@@ -312,11 +312,12 @@ object InnerTube {
     /** Which of the account's playlists already hold [videoId], from the save-to-playlist dialog. */
     private suspend fun containing(videoId: String): Map<String, Boolean> = withContext(Dispatchers.IO) {
         val out = LinkedHashMap<String, Boolean>()
-        post("playlist/get_add_to_playlist", JSONObject().put("videoIds", JSONArray().put(videoId))).walk { key, obj ->
-            if (key == "playlistAddToOptionRenderer") {
-                val id = obj.optString("playlistId").ifBlank { return@walk }
-                out[id] = obj.optString("containsSelectedVideos") == "ALL"
-            }
+        post("playlist/get_add_to_playlist", JSONObject().put("videoIds", JSONArray().put(videoId))).forEachObject { obj ->
+            // forEachObject, not walk: these renderers sit directly in an array, and walk only
+            // ever visits objects that are the value of a key (see its comment).
+            if (!obj.has("containsSelectedVideos")) return@forEachObject
+            val id = obj.optString("playlistId").ifBlank { return@forEachObject }
+            out[id] = obj.optString("containsSelectedVideos") == "ALL"
         }
         out
     }
@@ -380,9 +381,22 @@ object InnerTube {
     suspend fun setInWatchLater(videoId: String, add: Boolean) = setInPlaylist("WL", videoId, add)
 
     /** Adds [videoId] to a library, or takes it out. Watch later ("WL") goes through here too. */
-    suspend fun setInPlaylist(playlistId: String, videoId: String, add: Boolean) = withContext(Dispatchers.IO) {
-        val action = if (add) JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId)
-        else JSONObject().put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID").put("removedVideoId", videoId)
+    suspend fun setInPlaylist(playlistId: String, videoId: String, add: Boolean) = editPlaylist(
+        playlistId,
+        if (add) JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId)
+        else JSONObject().put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID").put("removedVideoId", videoId),
+    )
+
+    suspend fun renamePlaylist(playlistId: String, title: String) =
+        editPlaylist(playlistId, JSONObject().put("action", "ACTION_SET_PLAYLIST_NAME").put("playlistName", title))
+
+    /** Deletes a library, the videos in it and all. */
+    suspend fun deletePlaylist(playlistId: String) = withContext(Dispatchers.IO) {
+        post("playlist/delete", JSONObject().put("playlistId", playlistId))
+        Unit
+    }
+
+    private suspend fun editPlaylist(playlistId: String, action: JSONObject) = withContext(Dispatchers.IO) {
         post("browse/edit_playlist", JSONObject().put("playlistId", playlistId).put("actions", JSONArray().put(action)))
         Unit
     }

@@ -178,6 +178,7 @@ fun LibraryScreen(
     contentPadding: PaddingValues,
     onOpen: (VideoItem) -> Unit,
     onOpenPlaylist: (PlaylistRef) -> Unit,
+    onPlaylistMenu: (PlaylistRef) -> Unit,
     onSignIn: () -> Unit,
     onAccount: () -> Unit,
     scrollToTop: Int = 0,
@@ -238,7 +239,15 @@ fun LibraryScreen(
             )
             items((pinned + lib.playlists).chunked(2), key = { row -> row.joinToString { it.id } }) { row ->
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    row.forEach { pl -> PlaylistTile(pl, Modifier.weight(1f)) { onOpenPlaylist(pl) } }
+                    row.forEach { pl ->
+                        PlaylistTile(
+                            pl,
+                            Modifier.weight(1f),
+                            onClick = { onOpenPlaylist(pl) },
+                            // Watch later and Liked are YouTube's own: nothing to rename or delete.
+                            onLongClick = if (pl.id == "WL" || pl.id == "LL") null else { { onPlaylistMenu(pl) } },
+                        )
+                    }
                     if (row.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
@@ -261,7 +270,7 @@ private fun HistoryCard(video: VideoItem, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PlaylistTile(playlist: PlaylistRef, modifier: Modifier, onClick: () -> Unit) {
+private fun PlaylistTile(playlist: PlaylistRef, modifier: Modifier, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
     val c = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(26.dp)
     val (icon, tone) = when (playlist.id) {
@@ -272,7 +281,7 @@ private fun PlaylistTile(playlist: PlaylistRef, modifier: Modifier, onClick: () 
     Column(
         modifier = modifier
             .height(132.dp)
-            .pressable(pressedScale = 0.97f, onClick = onClick)
+            .pressable(pressedScale = 0.97f, onLongClick = onLongClick, onClick = onClick)
             .clip(shape)
             .background(c.surfaceContainerLow)
             .padding(14.dp),

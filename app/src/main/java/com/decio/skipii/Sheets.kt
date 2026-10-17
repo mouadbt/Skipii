@@ -45,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -96,16 +97,17 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
     }
 }
 
+/** A sheet row: icon, label, tap. Used by the long-press options and a library's own options. */
 @Composable
-private fun OptionRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+internal fun OptionRow(icon: ImageVector, label: String, tint: Color? = null, onClick: () -> Unit) {
     val c = MaterialTheme.colorScheme
     Row(
         Modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onClick = onClick).padding(horizontal = 24.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = c.onSurface)
+        Icon(icon, null, tint = tint ?: c.onSurface)
         Spacer(Modifier.width(18.dp))
-        Text(label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Text(label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = tint ?: Color.Unspecified)
     }
 }
 

@@ -191,6 +191,7 @@ fun SkipiiApp() {
     val stackBottom = navBottom.coerceAtLeast(8.dp) +
         if (WindowInsets.tappableElement.asPaddingValues().calculateBottomPadding() > 0.dp) 10.dp else 0.dp
     var optionsFor by remember { mutableStateOf<VideoItem?>(null) }
+    var playlistOptions by remember { mutableStateOf<PlaylistRef?>(null) }
     val hasMini = player.current != null
     // Lists scroll fully clear of the floating nav (and mini-player when present).
     val contentPadding = PaddingValues(
@@ -321,6 +322,7 @@ fun SkipiiApp() {
                 Tab.Search -> SearchScreen(search, contentPadding, onOpen = player::open, scrollToTop = scrollToTop[Tab.Search] ?: 0)
                 Tab.Library -> LibraryScreen(
                     lib, contentPadding, onOpen = player::open, onOpenPlaylist = { openPlaylist = it },
+                    onPlaylistMenu = { playlistOptions = it },
                     onSignIn = { signingIn = true }, onAccount = { accountSheet = true },
                     scrollToTop = scrollToTop[Tab.Library] ?: 0,
                 )
@@ -462,6 +464,13 @@ fun SkipiiApp() {
             null -> Unit
         }
         optionsFor?.let { video -> VideoOptionsSheet(video, player, onDismiss = { optionsFor = null }) }
+        playlistOptions?.let { playlist ->
+            PlaylistOptionsSheet(
+                playlist, player,
+                onChanged = { lib.loadPlaylists() },
+                onDismiss = { playlistOptions = null },
+            )
+        }
         // Confirmations ("Added to queue") when the full player isn't showing its own.
         if (!showPlayer) {
             QueueMessage(player, Modifier.align(Alignment.BottomCenter).padding(bottom = stackBottom + NavHeight + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 12.dp))

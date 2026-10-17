@@ -23,6 +23,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -52,6 +54,93 @@ import androidx.compose.ui.unit.sp
 
 /** Who can see a new library, as YouTube names it. */
 private val PRIVACY = listOf("PRIVATE" to "Private", "UNLISTED" to "Unlisted", "PUBLIC" to "Public")
+
+private enum class LibraryStep { Choose, Rename, Delete }
+
+// ── A library's own options (long-press it in the Library tab) ─────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PlaylistOptionsSheet(playlist: PlaylistRef, player: PlayerState, onChanged: () -> Unit, onDismiss: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    var step by remember(playlist.id) { mutableStateOf(LibraryStep.Choose) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = c.surfaceContainerLow) {
+        when (step) {
+            LibraryStep.Choose -> {
+                Row(Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (playlist.thumbnail != null) {
+                        Thumbnail(playlist.thumbnail, Modifier.size(width = 112.dp, height = 63.dp), radius = 14)
+                    } else {
+                        Box(Modifier.size(52.dp).clip(CookieShape).background(c.secondaryContainer), contentAlignment = Alignment.Center) {
+                            Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, null, tint = c.onSecondaryContainer)
+                        }
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(playlist.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(playlist.subtitle ?: "Library", color = c.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                OptionRow(Icons.Rounded.Edit, "Rename") { step = LibraryStep.Rename }
+                OptionRow(Icons.Rounded.DeleteOutline, "Delete", tint = c.error) { step = LibraryStep.Delete }
+                Spacer(Modifier.height(24.dp))
+            }
+            LibraryStep.Rename -> LibraryNameForm(
+                header = "Rename library",
+                submit = "Save",
+                initial = playlist.title,
+                onCancel = { step = LibraryStep.Choose },
+                onSubmit = { title, _ ->
+                    player.renameLibrary(playlist, title, onChanged)
+                    onDismiss()
+                },
+            )
+            LibraryStep.Delete -> DeleteLibraryConfirm(
+                title = playlist.title,
+                onCancel = { step = LibraryStep.Choose },
+                onDelete = {
+                    player.deleteLibrary(playlist, onChanged)
+                    onDismiss()
+                },
+            )
+        }
+    }
+}
+
+/** Deleting a library takes its videos with it: ask once, plainly. */
+@Composable
+private fun DeleteLibraryConfirm(title: String, onCancel: () -> Unit, onDelete: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(40.dp).pressable { onCancel() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = c.onSurface)
+            }
+            Spacer(Modifier.width(4.dp))
+            Text("Delete library?", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "“$title” and the videos in it will be gone. This can't be undone.",
+            color = c.onSurfaceVariant, fontSize = 14.sp, lineHeight = 20.sp,
+        )
+        Spacer(Modifier.height(18.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                Modifier.weight(1f).height(48.dp).pressable { onCancel() }
+                    .clip(RoundedCornerShape(22.dp)).background(c.surfaceContainerHighest),
+                contentAlignment = Alignment.Center,
+            ) { Text("Keep it", color = c.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+            Box(
+                Modifier.weight(1f).height(48.dp).pressable { onDelete() }
+                    .clip(RoundedCornerShape(22.dp)).background(c.error),
+                contentAlignment = Alignment.Center,
+            ) { Text("Delete", color = c.onError, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
 
 // ── Add to library (the player's sheet) ────────────────────────────────────────
 
@@ -83,15 +172,18 @@ fun LibraryPicker(videoId: String, player: PlayerState, onDone: () -> Unit, modi
     var failed by remember(videoId) { mutableStateOf(false) }
     var creating by remember(videoId) { mutableStateOf(false) }
     LaunchedEffect(videoId) {
-        runCatching { InnerTube.librariesFor(videoId) }
+        runCatching { player.librariesFor(videoId) }
             .onSuccess { rows = it }
             .onFailure { failed = true; rows = emptyList() }
     }
     Column(modifier.fillMaxWidth()) {
         if (creating) {
-            NewLibraryForm(
+            LibraryNameForm(
+                header = "New library",
+                submit = "Create",
+                withPrivacy = true,
                 onCancel = { creating = false },
-                onCreate = { title, privacy -> player.createLibrary(title, privacy, videoId); onDone() },
+                onSubmit = { title, privacy -> player.createLibrary(title, privacy, videoId); onDone() },
             )
             return@Column
         }
@@ -189,14 +281,23 @@ private fun NewLibraryRow(onClick: () -> Unit) {
     }
 }
 
-/** Names a new library and picks who can see it. */
+/**
+ * Names a library — a new one (name + who can see it), or an existing one being renamed.
+ * The field is ready to type in as soon as the form appears (same as the comment composer).
+ */
 @Composable
-private fun NewLibraryForm(onCancel: () -> Unit, onCreate: (title: String, privacy: String) -> Unit) {
+private fun LibraryNameForm(
+    header: String,
+    submit: String,
+    onCancel: () -> Unit,
+    onSubmit: (title: String, privacy: String) -> Unit,
+    initial: String = "",
+    withPrivacy: Boolean = false,
+) {
     val c = MaterialTheme.colorScheme
-    var title by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf(initial) }
     var privacy by remember { mutableStateOf(PRIVACY.first().first) }
-    val canCreate = title.isNotBlank()
-    // The field is ready to type in as soon as the form appears (same as the comment composer).
+    val canSubmit = title.isNotBlank() && title.trim() != initial
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
@@ -205,7 +306,7 @@ private fun NewLibraryForm(onCancel: () -> Unit, onCreate: (title: String, priva
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = c.onSurface)
             }
             Spacer(Modifier.width(4.dp))
-            Text("New library", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp)
+            Text(header, fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(10.dp))
         Box(
@@ -220,31 +321,33 @@ private fun NewLibraryForm(onCancel: () -> Unit, onCreate: (title: String, priva
                 textStyle = TextStyle(color = c.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
                 cursorBrush = SolidColor(c.primary),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, capitalization = KeyboardCapitalization.Sentences),
-                keyboardActions = KeyboardActions(onDone = { if (canCreate) onCreate(title.trim(), privacy) }),
+                keyboardActions = KeyboardActions(onDone = { if (canSubmit) onSubmit(title.trim(), privacy) }),
                 modifier = Modifier.fillMaxWidth().focusRequester(focus),
             )
         }
-        Spacer(Modifier.height(14.dp))
-        Text("Who can see it", color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(7.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            PRIVACY.forEach { (value, label) ->
-                val on = privacy == value
-                Box(
-                    Modifier
-                        .pressable { privacy = value }
-                        .clip(RoundedCornerShape(if (on) 18.dp else 10.dp))
-                        .background(if (on) c.secondaryContainer else c.surfaceContainerHighest)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                ) { Text(label, color = if (on) c.onSecondaryContainer else c.onSurfaceVariant, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+        if (withPrivacy) {
+            Spacer(Modifier.height(14.dp))
+            Text("Who can see it", color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(7.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                PRIVACY.forEach { (value, label) ->
+                    val on = privacy == value
+                    Box(
+                        Modifier
+                            .pressable { privacy = value }
+                            .clip(RoundedCornerShape(if (on) 18.dp else 10.dp))
+                            .background(if (on) c.secondaryContainer else c.surfaceContainerHighest)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) { Text(label, color = if (on) c.onSecondaryContainer else c.onSurfaceVariant, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                }
             }
         }
         Spacer(Modifier.height(18.dp))
         Box(
-            Modifier.fillMaxWidth().height(48.dp).pressable(enabled = canCreate) { onCreate(title.trim(), privacy) }
-                .clip(RoundedCornerShape(22.dp)).background(if (canCreate) c.primary else c.surfaceContainerHighest),
+            Modifier.fillMaxWidth().height(48.dp).pressable(enabled = canSubmit) { onSubmit(title.trim(), privacy) }
+                .clip(RoundedCornerShape(22.dp)).background(if (canSubmit) c.primary else c.surfaceContainerHighest),
             contentAlignment = Alignment.Center,
-        ) { Text("Create", color = if (canCreate) c.onPrimary else c.onSurfaceVariant, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+        ) { Text(submit, color = if (canSubmit) c.onPrimary else c.onSurfaceVariant, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
         Spacer(Modifier.height(6.dp))
     }
 }

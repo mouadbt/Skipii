@@ -409,7 +409,10 @@ class PlayerState(private val scope: CoroutineScope) {
     fun saveToLibrary(playlist: PlaylistRef, videoId: String, add: Boolean) {
         scope.launch {
             runCatching { InnerTube.setInPlaylist(playlist.id, videoId, add) }
-                .onSuccess { actionMessage = if (add) "Added to ${playlist.title}" else "Removed from ${playlist.title}" }
+                .onSuccess {
+                    libraryEdits.getOrPut(videoId) { mutableMapOf() }[playlist.id] = add
+                    actionMessage = if (add) "Added to ${playlist.title}" else "Removed from ${playlist.title}"
+                }
                 .onFailure { actionMessage = "Couldn't update ${playlist.title}."; Log.w(TAG, "library ${playlist.id} $videoId", it) }
         }
     }
@@ -418,8 +421,43 @@ class PlayerState(private val scope: CoroutineScope) {
     fun createLibrary(title: String, privacy: String, videoId: String) {
         scope.launch {
             runCatching { InnerTube.createPlaylist(title, videoId, privacy) }
-                .onSuccess { actionMessage = "Added to $title" }
+                .onSuccess {
+                    libraryEdits.getOrPut(videoId) { mutableMapOf() }[it] = true
+                    actionMessage = "Added to $title"
+                }
                 .onFailure { actionMessage = "Couldn't create $title."; Log.w(TAG, "new library $title", it) }
+        }
+    }
+
+    /**
+     * Library changes made in this session: video id → playlist id → whether the video is in it.
+     * The save dialog's ticks are the only thing that knows what a playlist holds from the
+     * outside, and it is a read that can fail or lag, so what the user just did here wins — that
+     * way the player's sheet and the long-press options always show the same tick.
+     */
+    private val libraryEdits = mutableMapOf<String, MutableMap<String, Boolean>>()
+
+    /** The libraries [videoId] can go into: the account's list, this session's own changes on top. */
+    suspend fun librariesFor(videoId: String): List<PlaylistMembership> =
+        InnerTube.librariesFor(videoId).map { row ->
+            libraryEdits[videoId]?.get(row.playlist.id)?.let { row.copy(contains = it) } ?: row
+        }
+
+    /** Renames one of the account's libraries; [onChanged] runs once YouTube has taken it. */
+    fun renameLibrary(playlist: PlaylistRef, title: String, onChanged: () -> Unit = {}) {
+        scope.launch {
+            runCatching { InnerTube.renamePlaylist(playlist.id, title) }
+                .onSuccess { actionMessage = "Renamed to $title"; onChanged() }
+                .onFailure { actionMessage = "Couldn't rename ${playlist.title}."; Log.w(TAG, "rename ${playlist.id}", it) }
+        }
+    }
+
+    /** Deletes one of the account's libraries, videos and all. */
+    fun deleteLibrary(playlist: PlaylistRef, onChanged: () -> Unit = {}) {
+        scope.launch {
+            runCatching { InnerTube.deletePlaylist(playlist.id) }
+                .onSuccess { actionMessage = "Deleted ${playlist.title}"; onChanged() }
+                .onFailure { actionMessage = "Couldn't delete ${playlist.title}."; Log.w(TAG, "delete ${playlist.id}", it) }
         }
     }
 
