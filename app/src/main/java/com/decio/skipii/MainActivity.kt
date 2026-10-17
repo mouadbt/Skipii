@@ -458,6 +458,7 @@ fun SkipiiApp() {
             PlayerSheet.Quality -> QualitySheet(player, onDismiss = { player.sheet = null })
             PlayerSheet.Comments -> Unit // a panel inside the player (PlayerScreen)
             PlayerSheet.Queue -> QueueSheet(player, onDismiss = { player.sheet = null })
+            PlayerSheet.Library -> LibrarySheet(player, onDismiss = { player.sheet = null })
             null -> Unit
         }
         optionsFor?.let { video -> VideoOptionsSheet(video, player, onDismiss = { optionsFor = null }) }

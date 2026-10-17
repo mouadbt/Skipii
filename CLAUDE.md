@@ -9,7 +9,8 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
 - Pure player: no upload/Create button. Tabs: Home / Subscriptions / Search / Library.
 - Google sign-in (decided 2026-10-04, superseding "no account"): WebView on Google's own page,
   youtube.com cookies kept AES-GCM encrypted (Keystore). **Full sync** chosen by Derek: reads
-  home/subscriptions/history/playlists AND writes likes, subscribes, Watch later, watch history.
+  home/subscriptions/history/playlists AND writes likes, subscribes, Watch later, libraries
+  (playlists), watch history.
   The account-suspension risk was explained; keep the in-app warning. Signed out, everything
   still works except the account feeds. Signed in, comments and replies can be posted.
 - No inbox/notifications tab.
@@ -172,6 +173,19 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
   `dragBy`'s old clamped path is untouched for the entry drag), and the release lifts it to the page —
   only a flick toward the page carries its velocity, so a downward one never dips first. A short drag
   either way still settles back into fullscreen, and the page's fade clamps the overscroll.
+- 0.5.25 (2026-10-17): libraries — "add to library" beside "Save to Watch later". The player's action
+  row gets a Library pill and the long-press sheet an "Add to library" row; both open the same picker
+  (`LibrarySheet.kt`: `LibrarySheet` for the player, `LibraryPicker` reused in place by the options).
+  It lists every playlist from the Library page (`InnerTube.playlists()`, Watch later / Liked
+  excluded like everywhere else) with a tick where the video already sits — the list is the complete
+  one, the ticks come best-effort from `playlist/get_add_to_playlist` (`InnerTube.containing`, so an
+  unexpected shape means no ticks, never an empty list). Tapping toggles membership through
+  `browse/edit_playlist` (`InnerTube.setInPlaylist`, the call Watch later already used; it is now
+  just `setInPlaylist("WL", …)`), and "New library" names one with Private/Unlisted/Public chips
+  (`playlist/create` with the video in the same request, the shape YouTube's own dialog uses, so one
+  round trip and no chance of an empty library left behind). Reads happen per open; writes run in
+  `PlayerState` (`saveToLibrary`/`createLibrary`) so closing the sheet can't cancel them, and confirm
+  through the player's own ActionMessage. NOT verified: needs Derek's signed-in account.
 - Themes = Ledgii's (2026-10-05): Wallpaper (default on 12+), Cream Rose, Erica, Lilac Air, Jai,
   Pumpkin, Moonstone, Iris, Harbor + System/Light/Dark, picked in the account sheet's Appearance
   card (`ThemeSettings`, persisted). Palettes in Theme.kt are copied verbatim from
@@ -257,6 +271,8 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
   450 ms fade in; logs "SponsorBlock: skipping …"). UI: scrubber marks, Ask pill, Skipped·Undo.
 - `PlaybackModes.kt` (`PlaybackSpeed`, `AudioOnly`) and `SpeedPanel.kt` (speed/audio buttons, ruler panel, `SpeedHaptics`).
 - `Sheets.kt` — long-press options, queue card + sheet, SponsorBlock settings.
+- `LibrarySheet.kt` — "add to library": the account's playlists with save ticks, and the new-playlist
+  form (shared by the player's sheet and the long-press options).
 - `SecureStore.kt` (Keystore AES-GCM prefs), `SignIn.kt` (WebView sign-in, account sheet),
   `Feeds.kt` (`FeedState` paging, `LibraryData`, `FeedList`).
 - `MainActivity.kt` — shell: tabs, nav capsule, morphing player / fullscreen, sheets, sign-in and

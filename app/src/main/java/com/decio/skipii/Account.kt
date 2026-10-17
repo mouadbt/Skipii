@@ -6,6 +6,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -21,6 +23,10 @@ data class Profile(val name: String, val handle: String?, val avatar: String?)
 
 @Immutable
 data class PlaylistRef(val id: String, val title: String, val thumbnail: String?, val subtitle: String?)
+
+/** A library to save to, with whether the video being saved already sits in it. */
+@Immutable
+data class PlaylistMembership(val playlist: PlaylistRef, val contains: Boolean)
 
 @Immutable
 data class ChannelRef(val id: String, val name: String, val avatar: String?)
@@ -291,6 +297,30 @@ object InnerTube {
         out.values.filterNot { it.id == "WL" || it.id == "LL" }
     }
 
+    /**
+     * Every library the account can save [videoId] to, with a tick where it already sits. The list
+     * comes from the Library page (always complete); the ticks from YouTube's own save dialog,
+     * best effort — an unexpected shape there just means no ticks, never an empty list. Both parts
+     * are asked for at once, so the sheet waits for one round trip, not two.
+     */
+    suspend fun librariesFor(videoId: String): List<PlaylistMembership> = coroutineScope {
+        val libraries = async { playlists() }
+        val holds = async { runCatching { containing(videoId) }.getOrDefault(emptyMap()) }
+        libraries.await().map { PlaylistMembership(it, holds.await()[it.id] == true) }
+    }
+
+    /** Which of the account's playlists already hold [videoId], from the save-to-playlist dialog. */
+    private suspend fun containing(videoId: String): Map<String, Boolean> = withContext(Dispatchers.IO) {
+        val out = LinkedHashMap<String, Boolean>()
+        post("playlist/get_add_to_playlist", JSONObject().put("videoIds", JSONArray().put(videoId))).walk { key, obj ->
+            if (key == "playlistAddToOptionRenderer") {
+                val id = obj.optString("playlistId").ifBlank { return@walk }
+                out[id] = obj.optString("containsSelectedVideos") == "ALL"
+            }
+        }
+        out
+    }
+
     /** Like state and subscription for a video, from the signed-in watch page data. */
     suspend fun videoState(videoId: String): VideoAccountState = withContext(Dispatchers.IO) {
         val next = post("next", JSONObject().put("videoId", videoId))
@@ -347,11 +377,27 @@ object InnerTube {
         Unit
     }
 
-    suspend fun setInWatchLater(videoId: String, add: Boolean) = withContext(Dispatchers.IO) {
+    suspend fun setInWatchLater(videoId: String, add: Boolean) = setInPlaylist("WL", videoId, add)
+
+    /** Adds [videoId] to a library, or takes it out. Watch later ("WL") goes through here too. */
+    suspend fun setInPlaylist(playlistId: String, videoId: String, add: Boolean) = withContext(Dispatchers.IO) {
         val action = if (add) JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId)
         else JSONObject().put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID").put("removedVideoId", videoId)
-        post("browse/edit_playlist", JSONObject().put("playlistId", "WL").put("actions", JSONArray().put(action)))
+        post("browse/edit_playlist", JSONObject().put("playlistId", playlistId).put("actions", JSONArray().put(action)))
         Unit
+    }
+
+    /**
+     * Makes a new library with [videoId] already in it, and returns its id. The video goes in this
+     * first call (the shape YouTube's own dialog and the music API use), so there is no second
+     * request that could fail and leave an empty library behind.
+     */
+    suspend fun createPlaylist(title: String, videoId: String, privacy: String): String = withContext(Dispatchers.IO) {
+        val id = post(
+            "playlist/create",
+            JSONObject().put("title", title).put("privacyStatus", privacy).put("videoIds", JSONArray().put(videoId)),
+        ).optString("playlistId")
+        id.ifBlank { throw IOException("YouTube didn't return the new playlist.") }
     }
 
     /** One video being watched: the tracking URL for its watch-time pings. */

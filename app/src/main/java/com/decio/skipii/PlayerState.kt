@@ -402,6 +402,28 @@ class PlayerState(private val scope: CoroutineScope) {
     }
 
     /**
+     * "Add to library": puts a video in one of the account's playlists, or takes it out again.
+     * Runs here for the same reason as [saveToWatchLater] — the sheet that asked closes straight
+     * after, and its scope would cancel the request with it.
+     */
+    fun saveToLibrary(playlist: PlaylistRef, videoId: String, add: Boolean) {
+        scope.launch {
+            runCatching { InnerTube.setInPlaylist(playlist.id, videoId, add) }
+                .onSuccess { actionMessage = if (add) "Added to ${playlist.title}" else "Removed from ${playlist.title}" }
+                .onFailure { actionMessage = "Couldn't update ${playlist.title}."; Log.w(TAG, "library ${playlist.id} $videoId", it) }
+        }
+    }
+
+    /** Makes a new library with [videoId] in it. [privacy] is PRIVATE, UNLISTED or PUBLIC. */
+    fun createLibrary(title: String, privacy: String, videoId: String) {
+        scope.launch {
+            runCatching { InnerTube.createPlaylist(title, videoId, privacy) }
+                .onSuccess { actionMessage = "Added to $title" }
+                .onFailure { actionMessage = "Couldn't create $title."; Log.w(TAG, "new library $title", it) }
+        }
+    }
+
+    /**
      * Switches quality (null = Auto). The media source is rebuilt from the cached stream
      * info at the same position, keeping play/pause as it was.
      */
@@ -655,6 +677,6 @@ fun rememberPlayerState(): PlayerState {
     return state
 }
 
-enum class PlayerSheet { Quality, Comments, Queue }
+enum class PlayerSheet { Quality, Comments, Queue, Library }
 
 private const val TAG = "Skipii"

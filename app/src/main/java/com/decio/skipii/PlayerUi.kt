@@ -41,6 +41,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material.icons.outlined.WatchLater
@@ -724,6 +725,14 @@ private fun AccountActions(state: PlayerState) {
         shape = RoundedCornerShape(22.dp),
         description = "Save to Watch later",
     ) { state.toggleWatchLater() }
+    ActionPill(
+        icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+        label = "Library",
+        active = false,
+        flourish = Flourish.Pop,
+        shape = RoundedCornerShape(22.dp),
+        description = "Add to library",
+    ) { state.sheet = PlayerSheet.Library }
 }
 
 @Composable
