@@ -15,11 +15,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.Velocity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -114,33 +111,6 @@ class PlayerMorph(
             reducedMotion -> progress.snapTo(target)
             expanded -> progress.animateTo(target, tween(Motion.MorphMs, easing = Motion.Morph))
             else -> progress.animateTo(target, tween(Motion.CollapseMs, easing = Motion.Emphasized))
-        }
-    }
-
-    /**
-     * Lets the details list hand its leftover downward drag to the morph once it's
-     * scrolled to the top, so the whole player can be swiped down, not just the video.
-     */
-    val nestedScroll = object : NestedScrollConnection {
-        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            // Mid-dismiss and the finger reverses: restore the player before scrolling.
-            if (dragging && source == NestedScrollSource.UserInput && available.y < 0f) {
-                return Offset(0f, dragBy(available.y))
-            }
-            return Offset.Zero
-        }
-
-        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-            if (source == NestedScrollSource.UserInput && available.y > 0f) {
-                return Offset(0f, dragBy(available.y))
-            }
-            return Offset.Zero
-        }
-
-        override suspend fun onPreFling(available: Velocity): Velocity {
-            if (!dragging) return Velocity.Zero
-            settle(available.y, reducedMotion = false)
-            return available
         }
     }
 

@@ -16,6 +16,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -71,15 +73,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlin.math.exp
 import androidx.compose.ui.graphics.lerp as lerpColor
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -115,20 +123,42 @@ private const val DetailsFadeStart = 0.55f
 fun PlayerScreen(
     state: PlayerState,
     morph: PlayerMorph,
+    gestures: ScreenGestures,
     onOpen: (VideoItem) -> Unit,
     onCollapse: () -> Unit,
     onFullscreen: () -> Unit,
 ) {
     val c = MaterialTheme.colorScheme
     val item = state.current ?: return
+    val scope = rememberCoroutineScope()
+    val reduced = rememberReducedMotion()
     // Collapsing (or collapsed): the player gives up the screen immediately, so the
     // mini-player underneath answers taps and swipes even while the animation finishes.
     val interactive = state.expanded || morph.dragging
+    // Page ↔ upright fullscreen ("fullscreen vertical"): pulling the details down.
+    val full = remember(item.id) { UprightFullscreen(scope, morph, open = state.uprightFullscreen) { state.uprightFullscreen = it } }
+    // Mid-transition the controls stay out of it: they would ride the travel and snap
+    // from the portrait style to the fullscreen one when the swap lands.
+    val fullBusy = full.dragging || full.progress.isRunning
     val showDetails by remember { derivedStateOf { state.expanded || morph.dragging || morph.progress.value > DetailsFadeStart } }
     val details = state.details
-    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    // The bars hide in fullscreen; the page itself must not shift when they do (the upright
+    // transition draws the video's travel itself), so the inset is taken once, while opening.
+    val statusTopNow = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val top = remember { statusTopNow }
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     var descriptionOpen by remember(item.id) { mutableStateOf(false) }
+    // How far the video's top edge must travel to sit in the middle of the screen, and how
+    // far a pull must go to commit — both driven into the transition for its math.
+    val config = LocalConfiguration.current
+    val stageHeight = (config.screenWidthDp.dp - StageSideGap * 2) / state.stageAspect
+    val travel = ((config.screenHeightDp.dp - stageHeight) / 2 - (top + StageTopGap)).coerceAtLeast(0.dp)
+    val density = LocalDensity.current
+    SideEffect {
+        full.travel = with(density) { travel.toPx() }
+        full.pull = with(density) { FullscreenPull.toPx() }
+    }
+    LaunchedEffect(state.uprightFullscreen, item.id) { full.animateTo(state.uprightFullscreen, reduced) }
 
     val pageColor = c.surface
     val miniColor = c.surfaceContainerHighest
@@ -153,37 +183,59 @@ fun PlayerScreen(
             .drawBehind {
                 val p = morph.progress.value
                 // Opaque throughout: at the small end it IS the mini-player card (same color).
-                drawRect(lerpColor(miniColor, pageColor, ramp(p, 0f, 0.6f)))
+                // Upright fullscreen fades the page to black behind the centred video.
+                drawRect(lerpColor(lerpColor(miniColor, pageColor, ramp(p, 0f, 0.6f)), Color.Black, full.progress.value))
             }
             // Open: a hit target over the whole screen, so taps never reach the tabs beneath.
             // Collapsing: no hit target at all, so touches fall through to the mini-player.
-            .then(if (interactive) Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } } else Modifier),
+            .then(if (interactive) Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } } else Modifier)
+            // Upright fullscreen's gestures: the sides set the brightness and volume, the
+            // middle drags the transition back to the page.
+            .then(
+                if (state.uprightFullscreen) Modifier.screenGestures(
+                    gestures,
+                    onExitDrag = { delta -> full.dragBy(-delta) },
+                    onExitDrop = { velocity -> full.settle(-velocity, reduced) },
+                ) else Modifier,
+            ),
     ) {
-        // Soft tint behind the video, fading into the page.
+        // Soft tint behind the video, fading into the page (and away in fullscreen).
         Box(
             Modifier.fillMaxWidth().height(520.dp)
-                .graphicsLayer { alpha = ramp(morph.progress.value, DetailsFadeStart) }
+                .graphicsLayer { alpha = ramp(morph.progress.value, DetailsFadeStart) * (1f - ramp(full.progress.value, 0f, 0.6f)) }
                 .background(Brush.verticalGradient(listOf(c.primaryContainer.copy(alpha = 0.75f), c.surface))),
         )
         ActionMessage(state, Modifier.align(Alignment.BottomCenter).zIndex(1f).padding(bottom = bottom + 24.dp))
         Column(Modifier.fillMaxSize()) {
             Spacer(Modifier.height(top + StageTopGap))
             // Pinned: the video stays put while the details scroll beneath it.
-            VideoStage(state, morph, onCollapse, onFullscreen, interactive)
+            VideoStage(state, morph, full, onCollapse, onFullscreen, interactive && !fullBusy)
             // While collapsing the details are invisible anyway; leaving them out keeps them
             // from catching touches meant for the mini-player.
             if (!showDetails) Spacer(Modifier.weight(1f)) else
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
-                    .nestedScroll(morph.nestedScroll)
+                    .nestedScroll(full.nestedScroll)
+                    // Fullscreen has dropped these rows off the page; eating their touches on
+                    // the way in (Initial) keeps taps and drags from landing on rows that are
+                    // no longer there. The root's own gestures see the event first.
+                    .then(
+                        if (state.uprightFullscreen) Modifier.pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                            }
+                        } else Modifier,
+                    )
                     .graphicsLayer {
                         // The details ride along under the video's bottom edge (so they never
-                        // overlap it mid-morph) and only fade in for the last stretch.
+                        // overlap it mid-morph), fade in for the last stretch, and drop away
+                        // with the video as the page turns fullscreen.
                         val p = morph.progress.value
-                        alpha = ramp(p, DetailsFadeStart)
+                        val f = full.progress.value
+                        alpha = ramp(p, DetailsFadeStart) * (1f - ramp(f, 0f, 0.5f))
                         val g = morph.geometry
-                        translationY = if (g != null) lerpF(g.miniThumb.bottom - g.stage.bottom, 0f, p) else 0f
+                        translationY = (if (g != null) lerpF(g.miniThumb.bottom - g.stage.bottom, 0f, p) else 0f) + full.travel * f
                     },
                 contentPadding = PaddingValues(bottom = bottom + 32.dp),
             ) {
@@ -277,6 +329,8 @@ fun PlayerScreen(
         // The mini-player's title and buttons travel with the shrinking video and fade in as
         // it lands, so the page turns into the mini-player rather than flying to one.
         MorphingMiniDetails(state, morph)
+        // The brightness/volume pill for fullscreen's side swipes (invisible until one starts).
+        ScreenGestureHud(gestures)
 
         // Comments open as a panel whose top sits just under the video.
         if (state.sheet == PlayerSheet.Comments) {
@@ -292,9 +346,12 @@ fun PlayerScreen(
  * Swiping it down minimizes (the morph). Swiping it up while open goes fullscreen, as in the
  * YouTube app (Derek, 2026-10-10): the video swells under the finger, and past
  * [FullscreenPull] or with a flick it turns to landscape; short of that it eases back.
+ * While upright fullscreen holds it ([UprightFullscreen]) the stage rests in the middle of
+ * the screen, over the hidden details (so it stays the one thing answering touches), and the
+ * side swipes around it run the brightness and volume instead.
  */
 @Composable
-private fun VideoStage(state: PlayerState, morph: PlayerMorph, onCollapse: () -> Unit, onFullscreen: () -> Unit, interactive: Boolean) {
+private fun VideoStage(state: PlayerState, morph: PlayerMorph, full: UprightFullscreen, onCollapse: () -> Unit, onFullscreen: () -> Unit, interactive: Boolean) {
     val reduced = rememberReducedMotion()
     val scope = rememberCoroutineScope()
     // The height follows the video; when its real shape arrives the change eases in.
@@ -310,6 +367,9 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, onCollapse: () ->
     var decided by remember { mutableStateOf(false) }
     var pulling by remember { mutableStateOf(false) }
     val stage = Modifier
+        // Upright fullscreen: the video slides down over the (hidden) details, so it must
+        // answer touches over them — and paint over them — too.
+        .zIndex(if (state.uprightFullscreen) 1f else 0f)
         .padding(horizontal = StageSideGap)
         .fillMaxWidth()
         .aspectRatio(aspect)
@@ -326,17 +386,20 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, onCollapse: () ->
         .graphicsLayer {
             val g = morph.geometry
             val p = morph.progress.value
+            // Upright fullscreen: from under the status bar to the middle of the screen.
+            val travel = full.travel * full.progress.value
             if (g != null) {
                 val f = g.videoFrame(size, p)
                 scaleX = f.scale
                 scaleY = f.scale
                 transformOrigin = TransformOrigin(0f, 0f)
                 translationX = f.offset.x
-                translationY = f.offset.y
+                translationY = f.offset.y + travel
                 // Radius in layer space: divided by the scale so the small version
                 // shows the thumbnail's 17 dp corners, not a shrunken 28 dp.
                 shape = RoundRectClip(f.window, lerpF(g.thumbRadius / f.startScale, g.stageRadius, p.coerceIn(0f, 1f)))
             } else {
+                translationY = travel
                 shape = RoundedCornerShape(StageRadius)
             }
             clip = true
@@ -355,6 +418,9 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, onCollapse: () ->
                 else morph.dragBy(delta)
             },
             orientation = Orientation.Vertical,
+            // Upright fullscreen drags on the root instead; and while the transition runs
+            // (entering or leaving) the stage must not start the morph under the finger.
+            enabled = !state.uprightFullscreen && !full.progress.isRunning,
             onDragStopped = { velocity ->
                 val wasPulling = pulling
                 decided = false
@@ -381,7 +447,8 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, onCollapse: () ->
     } else {
         VideoContent(
             state = state,
-            fullscreen = false,
+            // Fullscreen-style controls while upright fullscreen holds the stage.
+            fullscreen = state.uprightFullscreen,
             interactive = interactive,
             // A tap on the shrinking video brings the player straight back.
             onInactiveTap = { state.expanded = true },
@@ -395,6 +462,115 @@ private fun VideoStage(state: PlayerState, morph: PlayerMorph, onCollapse: () ->
 
 /** How far a swipe up on the open video travels before it goes fullscreen on release. */
 private val FullscreenPull = 64.dp
+
+/**
+ * Page ↔ upright fullscreen ("fullscreen vertical", Derek 2026-10-17): pulling the details
+ * down turns the watch page into fullscreen without turning the phone — the video slides to
+ * the middle of a black stage while the details drop away; a swipe down the video's middle
+ * (or Back, or the exit button) comes back. The morph owns mini ↔ page, this owns page ↔
+ * fullscreen, and it borrows the morph's whole feel: the same fling threshold, pull and
+ * springs, the same handover of the details list's leftover drag.
+ */
+@Stable
+class UprightFullscreen(
+    private val scope: CoroutineScope,
+    private val morph: PlayerMorph,
+    open: Boolean = false,
+    private val onSettled: (open: Boolean) -> Unit,
+) {
+    /** 0 = the watch page, 1 = fullscreen. Same too-small threshold as the morph. */
+    val progress = Animatable(if (open) 1f else 0f, visibilityThreshold = 0.0005f)
+    var dragging by mutableStateOf(false)
+        private set
+    private var startedOpen = false
+
+    /** How far the video's top edge must travel to the middle (px), and the commit pull. */
+    var travel by mutableFloatStateOf(1f)
+    var pull by mutableFloatStateOf(1f)
+
+    /** Applies a vertical finger delta (down = positive = toward fullscreen). Returns px used. */
+    fun dragBy(deltaY: Float): Float {
+        if (!dragging) {
+            dragging = true
+            startedOpen = progress.value >= 0.5f
+        }
+        val before = progress.value
+        val after = (before + deltaY / travel).coerceIn(0f, 1f)
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(after) }
+        return (after - before) * travel
+    }
+
+    /** Finger lifted: finish toward fullscreen or the page by distance or flick. */
+    fun settle(velocityY: Float, reducedMotion: Boolean) {
+        if (!dragging) return
+        dragging = false
+        val p = progress.value
+        val open = when {
+            velocityY > PlayerMorph.FLING_PX_PER_S -> true
+            velocityY < -PlayerMorph.FLING_PX_PER_S -> false
+            // Entering commits past the pull; leaving must be dragged back past it too.
+            startedOpen -> (1f - p) * travel < pull
+            else -> p * travel > pull
+        }
+        val target = if (open) 1f else 0f
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (reducedMotion) progress.snapTo(target)
+            // Leaving never overshoots, for the same reason the morph's close never does.
+            else progress.animateTo(target, if (open) settleSpec else closeSpec, initialVelocity = velocityY / travel)
+        }
+        onSettled(open)
+    }
+
+    /** Non-gesture changes: Back, the exit button, a rotation landing back in portrait. */
+    suspend fun animateTo(open: Boolean, reducedMotion: Boolean) {
+        // A forced change during a drag (Back while the finger is down) abandons the drag,
+        // so it can never leave the transition stuck mid-way under `dragging`.
+        dragging = false
+        val target = if (open) 1f else 0f
+        // Already heading there (e.g. a gesture's settle spring): don't restart it.
+        if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
+        when {
+            reducedMotion -> progress.snapTo(target)
+            open -> progress.animateTo(target, tween(Motion.MorphMs, easing = Motion.Morph))
+            else -> progress.animateTo(target, tween(Motion.CollapseMs, easing = Motion.Emphasized))
+        }
+    }
+
+    /**
+     * The details list's leftover downward pull (it can't scroll any further) drives this
+     * instead of minimizing the player. Mid-pull reversals retreat it before the list scrolls
+     * again, and only a landed page can start: mid-open, the pull still belongs to the morph.
+     */
+    val nestedScroll = object : NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            if (dragging && source == NestedScrollSource.UserInput && available.y < 0f) {
+                return Offset(0f, dragBy(available.y))
+            }
+            return Offset.Zero
+        }
+
+        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+            if (source == NestedScrollSource.UserInput && available.y > 0f &&
+                morph.progress.value >= 0.999f && !AudioOnly.enabled
+            ) {
+                return Offset(0f, dragBy(available.y))
+            }
+            return Offset.Zero
+        }
+
+        override suspend fun onPreFling(available: Velocity): Velocity {
+            if (!dragging) return Velocity.Zero
+            settle(available.y, reducedMotion = false)
+            return available
+        }
+    }
+
+    private companion object {
+        /** Entering takes the morph's soft overshoot; leaving eases in flat. */
+        val settleSpec = spring(dampingRatio = 0.86f, stiffness = 550f, visibilityThreshold = 0.0005f)
+        val closeSpec = spring(dampingRatio = 1f, stiffness = 550f, visibilityThreshold = 0.0005f)
+    }
+}
 
 // ── Account actions (signed in) ────────────────────────────────────────────────
 

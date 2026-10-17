@@ -200,6 +200,7 @@ fun SkipiiApp() {
     // Fullscreen is whenever the open player is shown in landscape (rotation or button).
     val activity = LocalContext.current as Activity
     val orientation = rememberOrientationController(activity)
+    val gestures = rememberScreenGestures(activity)
     val playerOpen = player.current != null && player.expanded
     // Audio only has no picture to go fullscreen with: the open player stays portrait.
     orientation.Bind(playerOpen && !AudioOnly.enabled)
@@ -209,19 +210,31 @@ fun SkipiiApp() {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // The PiP window can be any shape: hold whatever was showing when it opened.
     val fullscreenBeforePip = remember { mutableStateOf(false) }
+    // Upright fullscreen ("fullscreen vertical"): the phone stays portrait while the watch
+    // page turns fullscreen — its details were swiped down (see UprightFullscreen).
+    val uprightFullscreen = playerOpen && player.uprightFullscreen && !landscape
     val showFullscreen = if (pip.active) fullscreenBeforePip.value else playerOpen && landscape
     SideEffect { if (!pip.active) fullscreenBeforePip.value = showFullscreen }
     LaunchedEffect(showFullscreen) { player.fullscreen = showFullscreen }
-    SystemBarsHidden(showFullscreen)
-    fun toggleFullscreen() = if (showFullscreen) orientation.exitFullscreen() else orientation.enterFullscreen()
+    SystemBarsHidden(showFullscreen || uprightFullscreen)
+    // Leaving fullscreen from the portrait side too: the flag falls with the bars.
+    fun exitFullscreen() {
+        player.uprightFullscreen = false
+        orientation.exitFullscreen()
+    }
+    fun toggleFullscreen() = if (showFullscreen || uprightFullscreen) exitFullscreen() else orientation.enterFullscreen()
+    // The window's brightness follows the system again once the player is gone.
+    LaunchedEffect(hasMini) { if (!hasMini) gestures.resetBrightness() }
 
     BackHandler(enabled = player.expanded) { player.expanded = false }
     BackHandler(enabled = !player.expanded && tab != Tab.Home && openPlaylist == null) { tab = Tab.Home }
     BackHandler(enabled = !player.expanded && openPlaylist != null) { openPlaylist = null }
     BackHandler(enabled = signingIn) { signingIn = false }
     BackHandler(enabled = !player.expanded && openChannel != null) { openChannel = null }
-    // Registered last so it wins: in fullscreen, Back returns to the portrait player first.
-    BackHandler(enabled = showFullscreen) { orientation.exitFullscreen() }
+    // Registered next-to-last: in upright fullscreen Back returns to the watch page…
+    BackHandler(enabled = uprightFullscreen) { exitFullscreen() }
+    // …and in landscape fullscreen to the portrait player first (registered last, so it wins).
+    BackHandler(enabled = showFullscreen) { exitFullscreen() }
 
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val density = LocalDensity.current
@@ -417,10 +430,10 @@ fun SkipiiApp() {
 
         // The player morphs out of (and back into) the mini-player; see PlayerMorph.
         if (showFullscreen) {
-            FullscreenPlayer(player, onExit = { orientation.exitFullscreen() })
+            FullscreenPlayer(player, gestures, onExit = { exitFullscreen() })
         } else if (showPlayer) {
             PlayerScreen(
-                player, morph,
+                player, morph, gestures,
                 onOpen = player::open,
                 onCollapse = { player.expanded = false },
                 onFullscreen = { toggleFullscreen() },

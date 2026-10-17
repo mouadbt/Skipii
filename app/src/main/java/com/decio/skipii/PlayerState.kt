@@ -98,6 +98,12 @@ class PlayerState(private val scope: CoroutineScope) {
     var expanded by mutableStateOf(false)
     /** Landscape fullscreen requested (button) or entered (rotation). */
     var fullscreen by mutableStateOf(false)
+    /**
+     * Upright fullscreen ("fullscreen vertical", Derek 2026-10-17): swiping the details down
+     * turns the watch page into fullscreen without turning the phone. Landscape wins whenever
+     * the phone is actually turned; Back, the exit button or a middle swipe come back.
+     */
+    var uprightFullscreen by mutableStateOf(false)
     /** Which bottom sheet is open over the player, if any. */
     var sheet by mutableStateOf<PlayerSheet?>(null)
 
@@ -502,6 +508,7 @@ class PlayerState(private val scope: CoroutineScope) {
         queue = emptyList()
         expanded = false
         fullscreen = false
+        uprightFullscreen = false
         sheet = null
         current = null
         details = null

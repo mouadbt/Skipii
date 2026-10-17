@@ -142,6 +142,19 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
   skips, thick scrubber, SponsorBlock pill between the times) at `AudioStageAspect` 2.5; thumbnail under its
   centred 16:9 window shows through as it shrinks; mini-player shows the thumbnail; no fullscreen (orientation
   held portrait, no swipe-up).
+- 0.5.21 (2026-10-17): fullscreen brightness/volume swipes + upright ("vertical") fullscreen.
+  Fullscreen, landscape and upright alike: a vertical swipe over the left 40% of the screen sets the window's
+  brightness, over the right 40% the media volume — up = more (`ScreenGestures` / `Modifier.screenGestures`,
+  Fullscreen.kt; the system setting is never written, brightness returns to the system when the player closes;
+  glass pill HUD `ScreenGestureHud`, VideoView.kt). The middle 20% keeps the swipe-down the modes had
+  (leave landscape / leave upright), and taps, skip buttons, the scrubber and double-tap seek are untouched:
+  the layer reads on the Initial pass and only consumes once a vertical drag wins the touch slop.
+  Upright fullscreen (`UprightFullscreen`, PlayerUi.kt; flag `PlayerState.uprightFullscreen`): pulling the
+  watch page's details down — their leftover nested-scroll drag, which no longer minimizes
+  (`PlayerMorph.nestedScroll` is gone) — turns the page into fullscreen without turning the phone: the video
+  slides to the middle over the page fading to black, the details drop away, the fullscreen controls swap in
+  and the bars hide (`uprightFullscreen` folds into `SystemBarsHidden`). Back, the exit button and a
+  middle swipe-down return; rotating keeps it (landscape still wins when the phone is turned).
 - Themes = Ledgii's (2026-10-05): Wallpaper (default on 12+), Cream Rose, Erica, Lilac Air, Jai,
   Pumpkin, Moonstone, Iris, Harbor + System/Light/Dark, picked in the account sheet's Appearance
   card (`ThemeSettings`, persisted). Palettes in Theme.kt are copied verbatim from

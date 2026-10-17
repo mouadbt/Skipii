@@ -8,13 +8,10 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +33,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BrightnessMedium
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FastForward
@@ -49,6 +47,8 @@ import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -474,33 +474,89 @@ fun Modifier.aspectFit(aspect: Float, cover: Boolean = false) = layout { measura
 }
 
 /**
- * Landscape fullscreen. Swipe down (or Back, or the exit button) returns to portrait.
- * System bars are hidden by the caller while this is shown.
+ * Fullscreen, either orientation. Vertical swipes over the left/right sides run the
+ * brightness and volume ([ScreenGestures]); a swipe down the middle (or Back, or the exit
+ * button) returns to the portrait player. System bars are hidden by the caller while this
+ * is shown.
  */
 @Composable
-fun FullscreenPlayer(state: PlayerState, onExit: () -> Unit) {
+fun FullscreenPlayer(state: PlayerState, gestures: ScreenGestures, onExit: () -> Unit) {
     val reduced = rememberReducedMotion()
     var drag by remember { mutableStateOf(0f) }
-    VideoContent(
-        state = state,
-        fullscreen = true,
-        onCollapse = onExit,
-        onToggleFullscreen = onExit,
-        modifier = Modifier
+    Box(
+        Modifier
             .fillMaxSize()
-            .draggable(
-                state = rememberDraggableState { delta -> drag = (drag + delta).coerceAtLeast(0f) },
-                orientation = Orientation.Vertical,
-                onDragStopped = { velocity ->
+            .screenGestures(
+                gestures,
+                onExitDrag = { delta -> drag = (drag + delta).coerceAtLeast(0f) },
+                onExitDrop = { velocity ->
                     if (drag > 120f || velocity > 1400f) onExit()
                     drag = 0f
                 },
-            )
-            .graphicsLayer {
-                // A little give while dragging, so the gesture is visibly being heard.
-                translationY = if (reduced) 0f else drag * 0.35f
-            },
+            ),
+    ) {
+        VideoContent(
+            state = state,
+            fullscreen = true,
+            onCollapse = onExit,
+            onToggleFullscreen = onExit,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    // A little give while dragging, so the gesture is visibly being heard.
+                    translationY = if (reduced) 0f else drag * 0.35f
+                },
+        )
+        ScreenGestureHud(gestures)
+    }
+}
+
+/**
+ * The indicator fullscreen's brightness/volume swipes show in place of the system's own:
+ * a glass pill with the icon, a live bar and the percentage. Invisible (and untouchable —
+ * it has no pointer input) until a swipe starts.
+ */
+@Composable
+fun BoxScope.ScreenGestureHud(gestures: ScreenGestures) {
+    // Keep the last kind while fading out, so the pill's content doesn't blank mid-fade.
+    var shown by remember { mutableStateOf<ScreenGestureKind?>(null) }
+    LaunchedEffect(gestures.kind) { gestures.kind?.let { shown = it } }
+    val kind = gestures.kind ?: shown ?: return
+    val open = gestures.kind != null
+    val alpha by animateFloatAsState(
+        targetValue = if (open) 1f else 0f,
+        animationSpec = tween(if (open) 140 else 240, easing = Motion.Emphasized),
+        label = "gestureHud",
     )
+    if (alpha <= 0.01f) return
+    val fraction = gestures.value.coerceIn(0f, 1f)
+    Row(
+        modifier = Modifier
+            .align(Alignment.Center)
+            .graphicsLayer { this.alpha = alpha }
+            .height(44.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.42f))
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            when {
+                kind == ScreenGestureKind.Volume && fraction <= 0f -> Icons.Rounded.VolumeOff
+                kind == ScreenGestureKind.Volume -> Icons.Rounded.VolumeUp
+                else -> Icons.Rounded.BrightnessMedium
+            },
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.width(112.dp).height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.3f))) {
+            Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(CircleShape).background(Color.White))
+        }
+        Spacer(Modifier.width(10.dp))
+        RollingText("${(fraction * 100).roundToInt()}%", Color.White, up = true, fontSize = 13.sp)
+    }
 }
 
 /** "Skip sponsor ›" — shown while playback is inside a segment set to Ask. */
