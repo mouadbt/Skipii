@@ -78,6 +78,7 @@ import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.exp
 import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -194,8 +195,9 @@ fun PlayerScreen(
             .drawBehind {
                 val p = morph.progress.value
                 // Opaque throughout: at the small end it IS the mini-player card (same color).
-                // Upright fullscreen fades the page to black behind the centred video.
-                drawRect(lerpColor(lerpColor(miniColor, pageColor, ramp(p, 0f, 0.6f)), Color.Black, full.progress.value))
+                // Upright fullscreen fades the page to black behind the centred video, and the
+                // exit's pull takes it past 1 (the pull gives way, but this must still clamp).
+                drawRect(lerpColor(lerpColor(miniColor, pageColor, ramp(p, 0f, 0.6f)), Color.Black, ramp(full.progress.value, 0f, 1f)))
             }
             // Open: a hit target over the whole screen, so taps never reach the tabs beneath.
             // Collapsing: no hit target at all, so touches fall through to the mini-player.
@@ -205,7 +207,7 @@ fun PlayerScreen(
             .then(
                 if (state.uprightFullscreen) Modifier.screenGestures(
                     gestures,
-                    onExitDrag = { delta -> full.dragBy(-delta) },
+                    onExitDrag = { delta -> full.dragBack(delta) },
                     onExitDrop = { velocity -> full.settle(-velocity, reduced) },
                 ) else Modifier,
             ),
@@ -494,9 +496,11 @@ private val FullscreenPull = 64.dp
  * Page ↔ upright fullscreen ("fullscreen vertical", Derek 2026-10-17): pulling the details
  * down turns the watch page into fullscreen without turning the phone — the video slides to
  * the middle of a black stage while the details drop away; a swipe down the video's middle
- * (or Back, or the exit button) comes back. The morph owns mini ↔ page, this owns page ↔
- * fullscreen, and it borrows the morph's whole feel: the same fling threshold, pull and
- * springs, the same handover of the details list's leftover drag.
+ * (or Back, or the exit button) comes back. That swipe rides the finger the whole way: down
+ * pulls the video below the middle (the pull gives way the further it goes) and the release
+ * takes it up to the page, up unwinds it under the finger. The morph owns mini ↔ page, this
+ * owns page ↔ fullscreen, and it borrows the morph's whole feel: the same fling threshold,
+ * pull and springs, the same handover of the details list's leftover drag.
  */
 @Stable
 class UprightFullscreen(
@@ -516,13 +520,27 @@ class UprightFullscreen(
     var pull by mutableFloatStateOf(1f)
 
     /** Applies a vertical finger delta (down = positive = toward fullscreen). Returns px used. */
-    fun dragBy(deltaY: Float): Float {
+    fun dragBy(deltaY: Float): Float = drag(deltaY, over = false)
+
+    /**
+     * The exit gesture's drag: the same, except a downward pull carries the video on past the
+     * middle under the finger, giving way as it goes, and the release takes it up to the page.
+     */
+    fun dragBack(deltaY: Float): Float = drag(deltaY, over = true)
+
+    private fun drag(deltaY: Float, over: Boolean): Float {
         if (!dragging) {
             dragging = true
             startedOpen = progress.value >= 0.5f
         }
         val before = progress.value
-        val after = (before + deltaY / travel).coerceIn(0f, 1f)
+        val after = if (over && deltaY > 0f) {
+            // Past fullscreen the pull gives way, so the video is never dragged off the screen.
+            val below = (before - 1f).coerceAtLeast(0f) * travel
+            1f + (below + deltaY * exp(-below / (pull * 2f))) / travel
+        } else {
+            (before + deltaY / travel).coerceIn(0f, 1f)
+        }
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(after) }
         return (after - before) * travel
     }
@@ -533,17 +551,26 @@ class UprightFullscreen(
         dragging = false
         val p = progress.value
         val open = when {
+            // Leaving: a flick either way commits — a downward pull rides the finger now, so
+            // the pull's distance, not its direction, is what decides — and a short drag
+            // either way settles back into fullscreen.
+            startedOpen -> velocityY in -PlayerMorph.FLING_PX_PER_S..PlayerMorph.FLING_PX_PER_S &&
+                abs(1f - p) * travel < pull
             velocityY > PlayerMorph.FLING_PX_PER_S -> true
             velocityY < -PlayerMorph.FLING_PX_PER_S -> false
-            // Entering commits past the pull; leaving must be dragged back past it too.
-            startedOpen -> (1f - p) * travel < pull
+            // Entering commits past the pull.
             else -> p * travel > pull
         }
         val target = if (open) 1f else 0f
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             if (reducedMotion) progress.snapTo(target)
-            // Leaving never overshoots, for the same reason the morph's close never does.
-            else progress.animateTo(target, if (open) settleSpec else closeSpec, initialVelocity = velocityY / travel)
+            // Leaving never overshoots, and only a flick toward the page carries into it: the
+            // pull's own downward momentum would dip the video before lifting it to the top.
+            else progress.animateTo(
+                target,
+                if (open) settleSpec else closeSpec,
+                initialVelocity = (if (open) velocityY else velocityY.coerceAtMost(0f)) / travel,
+            )
         }
         onSettled(open)
     }

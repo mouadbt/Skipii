@@ -166,6 +166,12 @@ motion standard) and the approved mockup `docs/design/mockup.html` (open in a br
 - 0.5.23 (2026-10-17): the watch page's soft tint stays behind the video again. 0.5.22 moved the
   stage out of the details' column, so the tint (a sibling that used to sit under it) painted over
   the video; it now takes a lower `zIndex` than the stage.
+- 0.5.24 (2026-10-17): upright fullscreen's exit drag rides the finger. The middle's swipe-down used
+  to unwind the transition, so the video slid up as the finger went down; `UprightFullscreen.dragBack`
+  now lets a downward pull carry the video below the middle (the pull gives way the further it goes,
+  `dragBy`'s old clamped path is untouched for the entry drag), and the release lifts it to the page —
+  only a flick toward the page carries its velocity, so a downward one never dips first. A short drag
+  either way still settles back into fullscreen, and the page's fade clamps the overscroll.
 - Themes = Ledgii's (2026-10-05): Wallpaper (default on 12+), Cream Rose, Erica, Lilac Air, Jai,
   Pumpkin, Moonstone, Iris, Harbor + System/Light/Dark, picked in the account sheet's Appearance
   card (`ThemeSettings`, persisted). Palettes in Theme.kt are copied verbatim from
