@@ -210,9 +210,11 @@ fun PlayerScreen(
                 ) else Modifier,
             ),
     ) {
-        // Soft tint behind the video, fading into the page (and away in fullscreen).
+        // Soft tint behind the video, fading into the page (and away in fullscreen). Behind the
+        // video too: the stage is a sibling (-1) now, not a child of the list below it.
         Box(
             Modifier.fillMaxWidth().height(520.dp)
+                .zIndex(-2f)
                 .graphicsLayer { alpha = ramp(morph.progress.value, DetailsFadeStart) * (1f - ramp(full.progress.value, 0f, 0.6f)) }
                 .background(Brush.verticalGradient(listOf(c.primaryContainer.copy(alpha = 0.75f), c.surface))),
         )
