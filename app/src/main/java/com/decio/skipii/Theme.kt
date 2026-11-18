@@ -443,11 +443,15 @@ object ThemeSettings {
     /** "system", "light" or "dark". */
     var mode by mutableStateOf("system")
         private set
+    /** Dark mode with true-black pages and cards (OLED panels). */
+    var amoled by mutableStateOf(false)
+        private set
 
     fun init(context: Context) {
         val p = context.getSharedPreferences("appearance", Context.MODE_PRIVATE).also { prefs = it }
         seed = p.getString("seed", null) ?: if (wallpaperAvailable) null else SEED_CREAM_ROSE
         mode = p.getString("mode", "system") ?: "system"
+        amoled = p.getBoolean("amoled", false)
     }
 
     fun choose(seedHex: String?) {
@@ -458,6 +462,11 @@ object ThemeSettings {
     fun chooseMode(value: String) {
         mode = value
         prefs?.edit()?.putString("mode", value)?.apply()
+    }
+
+    fun chooseAmoled(value: Boolean) {
+        amoled = value
+        prefs?.edit()?.putBoolean("amoled", value)?.apply()
     }
 }
 
@@ -495,9 +504,26 @@ private fun youTubeScheme(dark: Boolean): ColorScheme = if (!dark) lightColorSch
 /** Every pickable theme: YouTube first, then Ledgii's in Ledgii's order. */
 val SKIPII_THEMES = listOf(ThemeChoice("YouTube", SEED_YOUTUBE)) + THEME_CHOICES
 
+/**
+ * True black on OLED: only the neutral surface ladder moves. The accent and every text role
+ * stay exactly as the chosen theme made them, so contrast and identity survive the switch.
+ */
+fun amoledScheme(cs: ColorScheme): ColorScheme = cs.copy(
+    background = Color.Black,
+    onBackground = cs.onBackground,
+    surface = Color.Black,
+    surfaceVariant = Color(0xFF1A1A1A),
+    surfaceContainerLowest = Color.Black,
+    surfaceContainerLow = Color(0xFF070707),
+    surfaceContainer = Color(0xFF0D0D0D),
+    surfaceContainerHigh = Color(0xFF151515),
+    surfaceContainerHighest = Color(0xFF1F1F1F),
+    outlineVariant = Color(0xFF262626),
+)
+
 /** The scheme for a choice, also used to paint the theme picker's swatches. */
-fun schemeFor(context: Context, seedHex: String?, dark: Boolean): ColorScheme =
-    if (seedHex == null && ThemeSettings.wallpaperAvailable) {
+fun schemeFor(context: Context, seedHex: String?, dark: Boolean, amoled: Boolean = false): ColorScheme {
+    val scheme = if (seedHex == null && ThemeSettings.wallpaperAvailable) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     } else if (seedHex.equals(SEED_YOUTUBE, ignoreCase = true)) {
         youTubeScheme(dark)
@@ -505,6 +531,8 @@ fun schemeFor(context: Context, seedHex: String?, dark: Boolean): ColorScheme =
         val seedValue = seedHex ?: SEED_CREAM_ROSE
         completeLedgiiScheme(seedValue, seedScheme(seedValue, dark))
     }
+    return if (dark && amoled) amoledScheme(scheme) else scheme
+}
 
 @Composable
 fun isDarkTheme(): Boolean = when (ThemeSettings.mode) {
@@ -518,7 +546,7 @@ fun isDarkTheme(): Boolean = when (ThemeSettings.mode) {
 fun SkipiiTheme(content: @Composable () -> Unit) {
     val dark = isDarkTheme()
     val context = LocalContext.current
-    val scheme = schemeFor(context, ThemeSettings.seed, dark)
+    val scheme = schemeFor(context, ThemeSettings.seed, dark, ThemeSettings.amoled)
     SystemBars(dark, scheme.surface)
     MaterialTheme(colorScheme = scheme, shapes = ExpressiveShapes, typography = Typography()) {
         CompositionLocalProvider(

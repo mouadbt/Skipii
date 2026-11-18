@@ -48,7 +48,11 @@ data class VideoItem(
     val durationSec: Long,
     val views: Long,
     val uploaded: String?,
+    val feedbackToken: String? = null,
 )
+
+@Immutable
+data class Chapter(val title: String, val startMs: Long)
 
 @Immutable
 data class VideoDetails(
@@ -64,6 +68,7 @@ data class VideoDetails(
     val qualities: List<Int>,
     /** Width / height of the chosen stream, known before the first frame; null if unknown. */
     val aspect: Float? = null,
+    val chapters: List<Chapter> = emptyList(),
 )
 
 @Immutable
@@ -143,7 +148,24 @@ object YouTube {
             qualities = StreamSelection.heights(info),
             aspect = (if (picked.usesSeparate) picked.video else picked.muxed)
                 ?.takeIf { it.width > 0 && it.height > 0 }?.let { it.width.toFloat() / it.height },
+            chapters = parseChapters(
+                info.description?.let { d ->
+                    if (d.type == Description.HTML) HtmlCompat.fromHtml(d.content, HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
+                    else d.content.trim()
+                }.orEmpty(),
+            ),
         )
+    }
+
+    private fun parseChapters(description: String): List<Chapter> {
+        val regex = Regex("""(?m)^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s*[-–—]?\s*(.+)$""")
+        return regex.findAll(description).mapNotNull { m ->
+            val h = m.groupValues[1].toLongOrNull() ?: 0L
+            val min = m.groupValues[2].toLongOrNull() ?: return@mapNotNull null
+            val sec = m.groupValues[3].toLongOrNull() ?: return@mapNotNull null
+            val title = m.groupValues[4].trim()
+            if (title.isBlank()) null else Chapter(title, (h * 3600 + min * 60 + sec) * 1000)
+        }.distinctBy { it.startMs }.sortedBy { it.startMs }.toList()
     }
 
     // ── Channels ──
@@ -167,15 +189,32 @@ object YouTube {
      * One page of a channel's uploads; [token] null for the first. Read through InnerTube
      * (not NewPipe) because only the raw page carries the "Members only" badge.
      */
-    suspend fun channelVideos(channel: ChannelDetails, token: String?): FeedPage {
-        val page = InnerTube.channelVideos(channel.id, token)
-        // The uploads list doesn't repeat the channel on every item; fill it in.
+    suspend fun channelVideos(
+        channel: ChannelDetails,
+        token: String?,
+        sortToken: String? = null,
+    ): ChannelFeedPage {
+        val result = InnerTube.channelVideos(channel.id, continuation = token, sortToken = sortToken)
+        val enriched = result.page.copy(videos = result.page.videos.map {
+            it.copy(channel = it.channel.ifBlank { channel.name }, avatar = it.avatar ?: channel.avatar, channelUrl = it.channelUrl ?: channel.url)
+        })
+        return ChannelFeedPage(enriched, result.sortTokens)
+    }
+
+    suspend fun channelLive(channel: ChannelDetails, token: String?): FeedPage {
+        val page = InnerTube.channelLive(channel.id, token)
         return page.copy(videos = page.videos.map {
             it.copy(channel = it.channel.ifBlank { channel.name }, avatar = it.avatar ?: channel.avatar, channelUrl = it.channelUrl ?: channel.url)
         })
     }
 
+    suspend fun channelPlaylists(channel: ChannelDetails, token: String?): PlaylistFeedPage {
+        return InnerTube.channelPlaylists(channel.id, token)
+    }
+
     private fun StreamInfoItem.toVideoItem(): VideoItem? {
+        // Shorts are forbidden, everywhere, with no setting and no exception.
+        if (isShortFormContent) return null
         // Live and upcoming entries need HLS handling that isn't built yet.
         if (streamType != StreamType.VIDEO_STREAM) return null
         val id = runCatching { service.streamLHFactory.getId(url) }.getOrNull() ?: return null

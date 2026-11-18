@@ -25,7 +25,8 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.rounded.ThumbUp
+import androidx.compose.material.icons.rounded.WatchLater
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -194,31 +195,63 @@ fun LibraryPicker(videoId: String, player: PlayerState, onDone: () -> Unit, modi
         )
         val list = rows
         when {
-            list == null -> Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircularProgressIndicator(color = c.primary, strokeWidth = 3.dp, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(12.dp))
-                Text("Loading your libraries…", color = c.onSurfaceVariant, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            }
-            // Long lists scroll rather than pushing the sheet off the top of the screen.
-            else -> Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
-                list.forEach { row ->
-                    LibraryRow(row) { player.saveToLibrary(row.playlist, videoId, !row.contains); onDone() }
+            list == null -> Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+                repeat(3) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        SkeletonBox(Modifier.size(width = 56.dp, height = 32.dp), RoundedCornerShape(10.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            SkeletonBox(Modifier.fillMaxWidth(0.7f).height(14.dp))
+                            Spacer(Modifier.height(6.dp))
+                            SkeletonBox(Modifier.fillMaxWidth(0.4f).height(10.dp))
+                        }
+                    }
                 }
-                if (list.isEmpty()) {
+            }
+            // Long lists scroll rather than pushing the sheet off the top of the screen. Taps
+            // toggle in place: the sheet stays open until Done, so several libraries can be chosen.
+            else -> Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+                val watchLater = list.firstOrNull { it.playlist.id == "WL" }
+                val custom = list.filterNot { it.playlist.id == "WL" }
+                custom.forEach { row ->
+                    LibraryRow(row) {
+                        val target = !row.contains
+                        rows = list.map { if (it.playlist.id == row.playlist.id) it.copy(contains = target) else it }
+                        player.saveToLibrary(row.playlist, videoId, target)
+                    }
+                }
+                if (custom.isEmpty()) {
                     Text(
                         if (failed) "Couldn't load your libraries." else "You have no libraries yet.",
                         color = c.onSurfaceVariant, fontSize = 14.sp,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
                     )
                 }
+                watchLater?.let { row ->
+                    Spacer(Modifier.height(4.dp))
+                    LibraryRow(row) {
+                        val target = !row.contains
+                        rows = list.map { if (it.playlist.id == "WL") it.copy(contains = target) else it }
+                        player.saveToLibrary(row.playlist, videoId, target)
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 NewLibraryRow { creating = true }
                 Spacer(Modifier.height(4.dp))
             }
         }
+        Spacer(Modifier.height(14.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .height(48.dp)
+                .pressable { onDone() }
+                .clip(RoundedCornerShape(22.dp))
+                .background(c.primary),
+            contentAlignment = Alignment.Center,
+        ) { Text("Done", color = c.onPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+        Spacer(Modifier.height(10.dp))
     }
 }
 
@@ -241,10 +274,15 @@ private fun LibraryRow(row: PlaylistMembership, onClick: () -> Unit) {
         if (playlist.thumbnail != null) {
             Thumbnail(playlist.thumbnail, Modifier.size(width = 56.dp, height = 32.dp), radius = 10)
         } else {
+            val icon = when (playlist.id) {
+                "WL" -> Icons.Rounded.WatchLater
+                "LL" -> Icons.Rounded.ThumbUp
+                else -> Icons.AutoMirrored.Rounded.PlaylistPlay
+            }
             Box(
                 Modifier.size(width = 56.dp, height = 32.dp).clip(RoundedCornerShape(10.dp)).background(c.surfaceContainerHighest),
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, null, tint = c.onSurfaceVariant, modifier = Modifier.size(18.dp)) }
+            ) { Icon(icon, null, tint = c.onSurfaceVariant, modifier = Modifier.size(18.dp)) }
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {

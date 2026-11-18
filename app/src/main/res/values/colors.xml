@@ -2,4 +2,6 @@
     <color name="brand">#D81E4A</color>
     <color name="window_light">#FFF8F8</color>
     <color name="window_dark">#140C0E</color>
+    <!-- Launcher icon backdrop for this personal build (the stock app is white). -->
+    <color name="ic_launcher_background">#0E0E12</color>
 </resources>

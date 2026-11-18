@@ -61,6 +61,26 @@ class InnerTubeParseTest {
         assertEquals("ordinary videos kept", 4, page.videos.size)
     }
 
+    /** Shorts are forbidden: every marker YouTube uses must drop the item, ordinary videos stay. */
+    @Test fun shortsAreNeverShown() {
+        val json = """
+            {"contents":{"sectionListRenderer":{"contents":[{"itemSectionRenderer":{"contents":[
+              {"videoRenderer":{"videoId":"shortReel01","title":{"runs":[{"text":"Reel"}]},
+                "navigationEndpoint":{"reelWatchEndpoint":{"videoId":"shortReel01"}}}},
+              {"videoRenderer":{"videoId":"shortUrl001","title":{"runs":[{"text":"Url short"}]},
+                "navigationEndpoint":{"commandMetadata":{"webCommandMetadata":{"url":"/shorts/shortUrl001"}}}}},
+              {"lockupViewModel":{"contentType":"LOCKUP_CONTENT_TYPE_VIDEO","contentId":"shortBadge1",
+                "metadata":{"lockupMetadataViewModel":{"title":{"content":"Badged short"}}},
+                "badges":[{"metadataBadgeViewModel":{"badgeStyle":"BADGE_STYLE_TYPE_SHORTS"}}]}},
+              {"videoRenderer":{"videoId":"normal00001","title":{"runs":[{"text":"Normal video"}]},
+                "lengthText":{"simpleText":"10:00"},"viewCountText":{"simpleText":"2 views"}}}
+            ]}}]}}}
+        """.trimIndent()
+        val page = InnerTube.parseFeed(JSONObject(json))
+        assertEquals(1, page.videos.size)
+        assertEquals("normal00001", page.videos.first().id)
+    }
+
     @Test fun viewCounts() {
         assertEquals(1_234_567L, InnerTube.parseViews("1,234,567 views"))
         assertEquals(1_200_000L, InnerTube.parseViews("1.2M views"))

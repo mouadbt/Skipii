@@ -1,5 +1,6 @@
 package com.decio.skipii
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -45,8 +46,12 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material.icons.outlined.WatchLater
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.ThumbDown
 import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.WatchLater
@@ -75,6 +80,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -89,6 +95,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -103,7 +110,8 @@ internal val StageTopGap = 0.dp
 internal val StageSideGap = 0.dp
 internal val StageRadius = 0.dp
 internal val MiniHeight = 70.dp
-internal val MiniRadius = 24.dp
+// The nav pill's own corner radius (62 dp tall); the mini-player shares it and sits flush on it.
+internal val MiniRadius = 31.dp
 internal val MiniThumbStart = 7.dp
 internal val MiniThumbWidth = 92.dp
 internal val MiniThumbHeight = 52.dp
@@ -174,7 +182,7 @@ fun PlayerScreen(
     LaunchedEffect(state.uprightFullscreen, item.id) { full.animateTo(state.uprightFullscreen, reduced) }
 
     val pageColor = c.surface
-    val miniColor = c.surfaceContainerHighest
+    val miniColor = NavBarSettings.color(c.surfaceContainerHighest, c.primary, c.background)
     Box(
         Modifier
             .fillMaxSize()
@@ -190,7 +198,11 @@ fun PlayerScreen(
                     lerpF(g.miniCard.left, full.left, p), lerpF(g.miniCard.top, full.top, p),
                     lerpF(g.miniCard.right, full.right, p), lerpF(g.miniCard.bottom, full.bottom, ramp(p, 0.3f)),
                 )
-                shape = RoundRectClip(frame, lerpF(g.miniRadius, 0f, p.coerceIn(0f, 1f)))
+                // Bottom corners start at 0 (docked with nav bar) and round smoothly as the card detaches;
+                // top corners stay round and ease to 0 as the player reaches full screen.
+                val topR = lerpF(g.miniRadius, 0f, p.coerceIn(0f, 1f))
+                val botR = lerpF(0f, g.miniRadius, ramp(p, 0f, 0.18f)) * (1f - ramp(p, 0.35f, 1f))
+                shape = MorphCardClip(frame, topR, botR)
                 clip = true
             }
             .drawBehind {
@@ -296,44 +308,65 @@ fun PlayerScreen(
                                 fontWeight = FontWeight.Medium,
                             )
                         }
-                        Spacer(Modifier.height(16.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val openChannel = LocalChannelOpener.current
-                            val channelUrl = details?.item?.channelUrl ?: item.channelUrl
-                            // Avatar + name open the channel (the Subscribe button beside them doesn't).
-                            Row(
-                                Modifier.weight(1f).pressable(enabled = channelUrl != null, pressedScale = 0.97f) { channelUrl?.let(openChannel) },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                            ChannelAvatar(details?.item?.avatar ?: item.avatar, item.channel, size = 46)
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(item.channel, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                details?.subscribers?.takeIf { it > 0 }?.let {
-                                    Text("${formatCount(it)} subscribers", color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        if (details?.chapters?.isNotEmpty() == true) {
+                            Spacer(Modifier.height(10.dp))
+                            Text("Chapters", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+                            details.chapters.forEach { chapter ->
+                                Text(
+                                    "${formatDuration(chapter.startMs)}  ${chapter.title}",
+                                    color = c.onSurfaceVariant,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .pressable { state.seekTo(chapter.startMs) }
+                                        .padding(vertical = 4.dp),
+                                )
+                            }
+                        }
+                        if (!PlayerUiSettings.hideChannelBar) {
+                            Spacer(Modifier.height(16.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val openChannel = LocalChannelOpener.current
+                                val channelUrl = details?.item?.channelUrl ?: item.channelUrl
+                                // Avatar + name open the channel (the Subscribe button beside them doesn't).
+                                Row(
+                                    Modifier.weight(1f).pressable(enabled = channelUrl != null, pressedScale = 0.97f) { channelUrl?.let(openChannel) },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    ChannelAvatar(details?.item?.avatar ?: item.avatar, item.channel, size = 46)
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(item.channel, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        details?.subscribers?.takeIf { it > 0 }?.let {
+                                            Text("${formatCount(it)} subscribers", color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
                                 }
-                            }
-                            }
-                            state.accountState?.subscribed?.let { subscribed ->
-                                SubscribeButton(subscribed, onClick = state::toggleSubscribe)
+                                state.accountState?.subscribed?.let { subscribed ->
+                                    SubscribeButton(subscribed, onClick = state::toggleSubscribe)
+                                }
                             }
                         }
                         PlayerActions(state)
-                        SpeedPanel(state)
                         QueueCard(state, onOpen = { state.sheet = PlayerSheet.Queue })
-                        CommentsCard(state.comments, onOpen = { state.sheet = PlayerSheet.Comments })
+                        if (!PlayerUiSettings.hideComments) {
+                            CommentsCard(state.comments, onOpen = { state.sheet = PlayerSheet.Comments })
+                        }
                     }
                 }
-                val related = details?.related.orEmpty()
-                if (related.isNotEmpty()) {
-                    item(key = "moreTitle") { SectionTitle("More videos") }
-                    items(related, key = { "rel-" + it.id }) { video ->
-                        Box(Modifier.padding(horizontal = 20.dp)) { VideoRow(video, onClick = { onOpen(video) }) }
-                    }
-                } else if (state.loading) {
-                    item(key = "loading") {
-                        Box(Modifier.fillMaxWidth().padding(top = 40.dp), Alignment.Center) {
-                            CircularProgressIndicator(color = c.primary, strokeWidth = 4.dp, modifier = Modifier.size(32.dp))
+                if (!PlayerUiSettings.hideRelated) {
+                    val related = details?.related.orEmpty()
+                    val filteredRelated = related.filterNot { ContentFilter.hideVideo(it) || HiddenVideos.isHidden(it.id) }
+                    if (filteredRelated.isNotEmpty()) {
+                        item(key = "moreTitle") { SectionTitle("More videos") }
+                        items(filteredRelated, key = { "rel-" + it.id }) { video ->
+                            Box(Modifier.padding(horizontal = 20.dp)) { VideoRow(video, onClick = { onOpen(video) }) }
+                        }
+                    } else if (state.loading) {
+                        item(key = "loading") { SectionTitle("More videos") }
+                        items(3, key = { "rel-skeleton-$it" }) {
+                            Box(Modifier.padding(horizontal = 20.dp)) { VideoRowSkeleton() }
                         }
                     }
                 }
@@ -675,9 +708,19 @@ private fun PlayerActions(state: PlayerState) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (state.accountState != null) AccountActions(state)
-        SpeedButton(state)
-        AudioOnlyButton(state)
+        PlayerUiSettings.actions().forEach { action ->
+            when (action) {
+                PlayerUiSettings.Action.Reactions -> if (state.accountState != null) ReactionPills(state)
+                    else SkeletonBox(Modifier.width(88.dp).height(36.dp), RoundedCornerShape(18.dp))
+                PlayerUiSettings.Action.Save -> if (state.accountState != null) SavePill(state)
+                    else SkeletonBox(Modifier.width(82.dp).height(36.dp), RoundedCornerShape(18.dp))
+                PlayerUiSettings.Action.Library -> if (state.accountState != null) LibraryPill(state)
+                    else SkeletonBox(Modifier.width(92.dp).height(36.dp), RoundedCornerShape(18.dp))
+                PlayerUiSettings.Action.Share -> SharePill(state)
+                PlayerUiSettings.Action.Download -> DownloadPill(state)
+                PlayerUiSettings.Action.AudioOnly -> AudioOnlyButton(state)
+            }
+        }
     }
 }
 
@@ -690,9 +733,9 @@ private fun Modifier.bleed(x: androidx.compose.ui.unit.Dp) = layout { measurable
     layout(placeable.width - extra, placeable.height) { placeable.place(-extra / 2, 0) }
 }
 
-/** Connected like | dislike group and Save (Watch later), all synced to the account; placed in [PlayerActions]' row. */
+/** Connected like | dislike group, synced to the account. */
 @Composable
-private fun AccountActions(state: PlayerState) {
+private fun ReactionPills(state: PlayerState) {
     val like = state.accountState?.like ?: LikeStatus.None
     var lastLikes by remember { mutableStateOf(state.displayLikes) }
     val likes = state.displayLikes
@@ -700,7 +743,7 @@ private fun AccountActions(state: PlayerState) {
     SideEffect { lastLikes = likes }
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         ActionPill(
-            icon = if (like == LikeStatus.Like) Icons.Rounded.ThumbUp else Icons.Outlined.ThumbUp,
+            icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_heart),
             label = likes.takeIf { it > 0 }?.let { formatCount(it) },
             active = like == LikeStatus.Like,
             flourish = Flourish.Pop,
@@ -709,7 +752,7 @@ private fun AccountActions(state: PlayerState) {
             description = "Like",
         ) { state.setLike(LikeStatus.Like) }
         ActionPill(
-            icon = if (like == LikeStatus.Dislike) Icons.Rounded.ThumbDown else Icons.Outlined.ThumbDown,
+            icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_dislike),
             label = null,
             active = like == LikeStatus.Dislike,
             flourish = Flourish.Droop,
@@ -717,22 +760,96 @@ private fun AccountActions(state: PlayerState) {
             description = "Dislike",
         ) { state.setLike(LikeStatus.Dislike) }
     }
+}
+
+/** Watch later: its label and filled state follow the video, so tapping Saved removes it. */
+@Composable
+private fun SavePill(state: PlayerState) {
     ActionPill(
-        icon = if (state.inWatchLater) Icons.Rounded.WatchLater else Icons.Outlined.WatchLater,
+        icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_bookmark),
         label = if (state.inWatchLater) "Saved" else "Save",
         active = state.inWatchLater,
         flourish = Flourish.Drop,
         shape = RoundedCornerShape(22.dp),
-        description = "Save to Watch later",
+        description = if (state.inWatchLater) "Remove from Watch later" else "Save to Watch later",
     ) { state.toggleWatchLater() }
+}
+
+/** Library: names the one library it sits in, counts several, stays "Library" when none. */
+@Composable
+private fun LibraryPill(state: PlayerState) {
+    val libraries = state.savedLibraries
     ActionPill(
-        icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-        label = "Library",
-        active = false,
+        icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(
+            if (libraries.isEmpty()) R.drawable.solar_playlist else R.drawable.solar_check,
+        ),
+        label = libraryButtonLabel(libraries),
+        active = libraries.isNotEmpty(),
         flourish = Flourish.Pop,
         shape = RoundedCornerShape(22.dp),
         description = "Add to library",
     ) { state.sheet = PlayerSheet.Library }
+}
+
+@Composable
+private fun SharePill(state: PlayerState) {
+    val context = LocalContext.current
+    ActionPill(
+        icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_share),
+        label = "Share",
+        active = false,
+        flourish = Flourish.Pop,
+        shape = RoundedCornerShape(22.dp),
+        description = "Share",
+    ) {
+        val video = state.current ?: return@ActionPill
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, "https://youtu.be/${video.id}")
+            .putExtra(Intent.EXTRA_SUBJECT, video.title)
+        context.startActivity(Intent.createChooser(send, null))
+    }
+}
+
+/**
+ * Download: shows the saved state while the file is there, live progress while it downloads,
+ * and otherwise starts right away (fixed quality) or opens the quality picker.
+ */
+@Composable
+private fun DownloadPill(state: PlayerState) {
+    val item = state.current ?: return
+    val entry = DownloadStore.entry(item.id)
+    val progress = DownloadStore.progressOf(item.id)
+    val label = when {
+        entry != null -> "Downloaded"
+        progress != null -> if (progress.total > 0) "${(progress.fraction * 100).toInt()}%" else "Saving…"
+        else -> "Download"
+    }
+    ActionPill(
+        icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(
+            if (entry != null) R.drawable.solar_check else R.drawable.solar_download,
+        ),
+        label = label,
+        active = entry != null,
+        flourish = Flourish.Pop,
+        shape = RoundedCornerShape(22.dp),
+        description = "Download for offline",
+    ) {
+        when {
+            entry != null || progress != null -> state.sheet = PlayerSheet.Download
+            DownloadSettings.askEachTime -> state.sheet = PlayerSheet.Download
+            else -> DownloadStore.download(item, DownloadSettings.qualityHeight)
+        }
+    }
+}
+
+/**
+ * The Library button names the library when the video sits in exactly one, counts them when
+ * it sits in several, and stays short enough for the action row by trimming long names.
+ */
+private fun libraryButtonLabel(libraries: List<PlaylistRef>): String = when {
+    libraries.isEmpty() -> "Library"
+    libraries.size > 1 -> "${libraries.size} libraries"
+    else -> libraries.first().title.trim().let { if (it.length <= 12) it else it.take(11).trimEnd() + "…" }
 }
 
 @Composable
@@ -791,15 +908,16 @@ private fun ActionMessage(state: PlayerState, modifier: Modifier) {
 fun MiniPlayer(state: PlayerState, onExpand: () -> Unit, modifier: Modifier = Modifier, showVideo: Boolean = true) {
     val c = MaterialTheme.colorScheme
     val item = state.current ?: return
-    val shape = RoundedCornerShape(MiniRadius)
+    // Round top only: the bottom edge is flush with the nav pill beneath, forming one dock.
+    val shape = RoundedCornerShape(topStart = MiniRadius, topEnd = MiniRadius)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(MiniHeight)
-            .pressable(pressedScale = 0.98f, onClick = onExpand)
+            .pressable(pressedScale = 1f, onClick = onExpand)
             .shadow(16.dp, shape, ambientColor = Color.Black.copy(alpha = 0.12f), spotColor = Color.Black.copy(alpha = 0.18f))
             .clip(shape)
-            .background(c.surfaceContainerHighest)
+            .background(NavBarSettings.color(c.surfaceContainerHighest, c.primary, c.background))
     ) {
         Row(Modifier.fillMaxSize().padding(start = MiniThumbStart, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             // The live video, not a still. While the player is open or morphing, this slot

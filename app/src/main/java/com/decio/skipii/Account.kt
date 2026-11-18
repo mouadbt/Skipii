@@ -1,6 +1,7 @@
 package com.decio.skipii
 
 import android.content.Context
+import android.util.Base64
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,12 +29,24 @@ data class PlaylistRef(val id: String, val title: String, val thumbnail: String?
 @Immutable
 data class PlaylistMembership(val playlist: PlaylistRef, val contains: Boolean)
 
+/** Where one video currently sits: Watch later and the account's own libraries. */
+@Immutable
+data class VideoMembership(val inWatchLater: Boolean, val playlists: List<PlaylistRef>)
+
 @Immutable
 data class ChannelRef(val id: String, val name: String, val avatar: String?)
 
 /** One page of a feed plus the token for the next page, if any. */
 @Immutable
 data class FeedPage(val videos: List<VideoItem>, val next: String?)
+
+/** A channel's Videos tab page plus the sort chips YouTube offered alongside it. */
+@Immutable
+data class ChannelFeedPage(val page: FeedPage, val sortTokens: Map<String, String>)
+
+/** A channel's Playlists tab page: the playlists and the token for the next page. */
+@Immutable
+data class PlaylistFeedPage(val playlists: List<PlaylistRef>, val next: String?)
 
 enum class LikeStatus { Like, Dislike, None }
 
@@ -245,14 +258,89 @@ object InnerTube {
     suspend fun home(next: String? = null) = browse("FEwhat_to_watch", next)
 
     /** A channel's uploads (Videos tab), members-only ones filtered out like everywhere else. */
-    suspend fun channelVideos(channelId: String, continuation: String? = null): FeedPage = withContext(Dispatchers.IO) {
+    suspend fun channelVideos(
+        channelId: String,
+        continuation: String? = null,
+        sortToken: String? = null,
+    ): ChannelFeedPage = withContext(Dispatchers.IO) {
+        val body = when {
+            continuation != null -> JSONObject().put("continuation", continuation)
+            sortToken != null -> JSONObject().put("continuation", sortToken)
+            else -> JSONObject().put("browseId", channelId).put("params", CHANNEL_VIDEOS_TAB)
+        }
+        val root = postAny("browse", body)
+        ChannelFeedPage(parseFeed(root), channelSortTokens(root))
+    }
+
+    /** A channel's live tab. Same renderers as uploads; HLS playback is reported by the player. */
+    suspend fun channelLive(channelId: String, continuation: String? = null): FeedPage = withContext(Dispatchers.IO) {
         val body = if (continuation != null) JSONObject().put("continuation", continuation)
-        else JSONObject().put("browseId", channelId).put("params", CHANNEL_VIDEOS_TAB)
+        else JSONObject().put("browseId", channelId).put("params", CHANNEL_LIVE_TAB)
         parseFeed(postAny("browse", body))
+    }
+
+    /** A channel's playlists tab. */
+    suspend fun channelPlaylists(channelId: String, continuation: String? = null): PlaylistFeedPage = withContext(Dispatchers.IO) {
+        val body = if (continuation != null) JSONObject().put("continuation", continuation)
+        else JSONObject().put("browseId", channelId).put("params", CHANNEL_PLAYLISTS_TAB)
+        parsePlaylists(postAny("browse", body))
     }
 
     /** The channel page's Videos tab selector (as on youtube.com, 2026-10-06). */
     private const val CHANNEL_VIDEOS_TAB = "EgZ2aWRlb3PyBgQKAjoA"
+    private const val CHANNEL_LIVE_TAB = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
+    private const val CHANNEL_PLAYLISTS_TAB = "EglwbGF5bGlzdHPyBgoKCEIGCgIQaCIA"
+
+    /** YouTube's Latest / Popular / Oldest chips carry the continuation token for each order. */
+    private fun channelSortTokens(root: JSONObject): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        root.forEachObject { o ->
+            val chip = o.optJSONObject("chipViewModel") ?: return@forEachObject
+            val label = chip.optString("text").ifBlank { return@forEachObject }
+            val token = chip.collectStrings("token").firstOrNull() ?: return@forEachObject
+            out.putIfAbsent(label, token)
+        }
+        return out
+    }
+
+    /** Pulls playlist cards out of a browse response, classic and lockup renderers alike. */
+    internal fun parsePlaylists(root: JSONObject): PlaylistFeedPage {
+        val out = LinkedHashMap<String, PlaylistRef>()
+        var next: String? = null
+        root.forEachObject { o ->
+            if (o.optString("contentType") == "LOCKUP_CONTENT_TYPE_PLAYLIST") {
+                val id = o.optString("contentId").ifBlank { return@forEachObject }
+                val meta = o.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel") ?: return@forEachObject
+                val title = meta.optJSONObject("title")?.optString("content")?.ifBlank { null } ?: return@forEachObject
+                val count = o.collectStrings("text").firstOrNull { it.contains("video", ignoreCase = true) }
+                out.putIfAbsent(
+                    id,
+                    PlaylistRef(id, title, o.collectStrings("url").firstOrNull { it.contains("ytimg") }, count),
+                )
+            }
+        }
+        // The classic renderers sit in arrays, so visit them separately.
+        root.forEachObject { o ->
+            val pl = o.optJSONObject("playlistRenderer") ?: o.optJSONObject("gridPlaylistRenderer") ?: return@forEachObject
+            val id = pl.optString("playlistId").ifBlank { return@forEachObject }
+            val title = pl.text("title") ?: return@forEachObject
+            out.putIfAbsent(
+                id,
+                PlaylistRef(
+                    id = id,
+                    title = title,
+                    thumbnail = pl.thumbnails()?.lastOrNull()?.let(::absoluteUrl),
+                    subtitle = pl.text("videoCountText") ?: pl.text("videoCountShortText"),
+                ),
+            )
+        }
+        root.walk { key, obj ->
+            if (key == "continuationItemRenderer" || key == "continuationItemViewModel") {
+                obj.collectStrings("token").firstOrNull()?.let { next = it }
+            }
+        }
+        return PlaylistFeedPage(out.values.toList(), next)
+    }
     suspend fun subscriptionsFeed(next: String? = null) = browse("FEsubscriptions", next)
     suspend fun history(next: String? = null) = browse("FEhistory", next)
     suspend fun playlist(id: String, next: String? = null) = browse("VL$id", next)
@@ -306,7 +394,17 @@ object InnerTube {
     suspend fun librariesFor(videoId: String): List<PlaylistMembership> = coroutineScope {
         val libraries = async { playlists() }
         val holds = async { runCatching { containing(videoId) }.getOrDefault(emptyMap()) }
-        libraries.await().map { PlaylistMembership(it, holds.await()[it.id] == true) }
+        val held = holds.await()
+        // Watch later is YouTube's own library: keep it first here, the picker pins it at the bottom.
+        listOf(PlaylistMembership(PlaylistRef("WL", "Watch later", null, null), held["WL"] == true)) +
+            libraries.await().map { PlaylistMembership(it, held[it.id] == true) }
+    }
+
+    /** Where [videoId] already sits, for the player's dynamic Save/Library buttons. */
+    suspend fun membership(videoId: String): VideoMembership = withContext(Dispatchers.IO) {
+        val held = runCatching { containing(videoId) }.getOrDefault(emptyMap())
+        val libraries = runCatching { playlists() }.getOrDefault(emptyList()).filter { held[it.id] == true }
+        VideoMembership(inWatchLater = held["WL"] == true, playlists = libraries)
     }
 
     /** Which of the account's playlists already hold [videoId], from the save-to-playlist dialog. */
@@ -376,6 +474,28 @@ object InnerTube {
             JSONObject().put("channelIds", JSONArray().put(channelId)),
         )
         Unit
+    }
+
+    /**
+     * Turns a channel's notifications on or off. The web client sends a tiny protobuf:
+     * channel id, preference (ALL=2, NONE=3), and two fixed fields around it.
+     */
+    suspend fun setChannelNotifications(channelId: String, enabled: Boolean) = withContext(Dispatchers.IO) {
+        val id = channelId.toByteArray(Charsets.UTF_8)
+        val body = java.io.ByteArrayOutputStream()
+        body.write(0x0a)
+        body.write(id.size)
+        body.write(id)
+        body.write(byteArrayOf(0x12, 0x02, 0x08, if (enabled) 0x02 else 0x03))
+        body.write(byteArrayOf(0x18, 0x00, 0x20, 0x04, 0x52, 0x06, 0x0a, 0x02, 0x08, 0x02, 0x18, 0x00))
+        val params = Base64.encodeToString(body.toByteArray(), Base64.NO_WRAP)
+        post("notification/modify_channel_preference", JSONObject().put("params", params))
+        Unit
+    }
+
+    suspend fun notInterested(feedbackToken: String?) = withContext(Dispatchers.IO) {
+        if (feedbackToken.isNullOrBlank()) return@withContext
+        runCatching { post("feedback", JSONObject().put("feedbackTokens", JSONArray().put(feedbackToken))) }
     }
 
     suspend fun setInWatchLater(videoId: String, add: Boolean) = setInPlaylist("WL", videoId, add)
@@ -483,8 +603,10 @@ object InnerTube {
                 // Members-only videos can't be played (anonymous extraction), and full movies/TV
                 // aren't wanted (Derek), so neither is ever shown.
                 "videoRenderer", "gridVideoRenderer", "compactVideoRenderer", "playlistVideoRenderer" ->
-                    if (!isMembersOnly(obj) && !isMovie(obj)) parseVideoRenderer(obj)?.let { videos.putIfAbsent(it.id, it) }
-                "lockupViewModel" -> if (obj.optString("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO" && !isMembersOnly(obj) && !isMovie(obj)) {
+                    if (!isMembersOnly(obj) && !isMovie(obj) && !isShortForm(obj)) parseVideoRenderer(obj)?.let { videos.putIfAbsent(it.id, it) }
+                "lockupViewModel" -> if (obj.optString("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO" &&
+                    !isMembersOnly(obj) && !isMovie(obj) && !isShortForm(obj)
+                ) {
                     parseLockup(obj)?.let { videos.putIfAbsent(it.id, it) }
                 }
                 // Only the feed's own "load more" item (old and new names); chip filters
@@ -523,7 +645,25 @@ object InnerTube {
 
     private val CONTENT_RATING = Regex("^(G|PG|PG-13|R|NC-17|NR|TV-(Y|Y7|G|PG|14|MA))$")
 
+    /**
+     * Shorts are forbidden everywhere in this build. YouTube marks them several ways depending
+     * on the surface: a reel watch endpoint or /shorts/ URL, a Shorts badge/overlay style, or
+     * the dedicated shortsLockupViewModel/reelItemRenderer (which we never parse). Any marker
+     * is enough: a single short must never slip into a feed, search, related list or playlist.
+     */
+    internal fun isShortForm(o: JSONObject): Boolean {
+        if (o.collectStrings("webPageType").any { it == "WEB_PAGE_TYPE_SHORTS" }) return true
+        if (o.collectStrings("url").any { it.contains("/shorts/", ignoreCase = true) }) return true
+        if (o.collectStrings("style").any { it.contains("SHORTS", ignoreCase = true) }) return true
+        if (o.collectStrings("badgeText").any { it.equals("Shorts", ignoreCase = true) }) return true
+        if (o.collectStrings("badgeStyle").any { it.contains("SHORTS", ignoreCase = true) }) return true
+        var reel = false
+        o.forEachObject { if (it.has("reelWatchEndpoint") || it.has("reelPlayerOverlayRenderer")) reel = true }
+        return reel
+    }
+
     private fun parseVideoRenderer(o: JSONObject): VideoItem? {
+        if (isShortForm(o)) return null
         val id = o.optString("videoId").ifBlank { return null }
         val byline = o.optJSONObject("ownerText") ?: o.optJSONObject("shortBylineText") ?: o.optJSONObject("longBylineText")
         val channelRun = byline?.optJSONArray("runs")?.optJSONObject(0)
@@ -550,10 +690,12 @@ object InnerTube {
             durationSec = parseDuration(duration),
             views = parseViews(o.text("viewCountText") ?: o.text("shortViewCountText") ?: infoRuns.firstOrNull { it.contains("view") }),
             uploaded = o.text("publishedTimeText") ?: infoRuns.firstOrNull { it.contains("ago") },
+            feedbackToken = o.collectStrings("feedbackToken").firstOrNull(),
         )
     }
 
     private fun parseLockup(o: JSONObject): VideoItem? {
+        if (isShortForm(o)) return null
         val id = o.optString("contentId").ifBlank { return null }
         val meta = o.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel") ?: return null
         val title = meta.optJSONObject("title")?.optString("content")?.ifBlank { null } ?: return null
@@ -577,6 +719,7 @@ object InnerTube {
             durationSec = parseDuration(duration),
             views = parseViews(parts.firstOrNull { it.contains("view") }),
             uploaded = parts.firstOrNull { it.contains("ago") },
+            feedbackToken = o.collectStrings("feedbackToken").firstOrNull(),
         )
     }
 

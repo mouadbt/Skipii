@@ -17,11 +17,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +41,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -49,20 +60,65 @@ import org.schabi.newpipe.extractor.Page
 /** Opens a channel page from anywhere (player channel row, card avatars). Provided by the shell. */
 val LocalChannelOpener = staticCompositionLocalOf<(String) -> Unit> { {} }
 
+enum class ChannelTab(val label: String) {
+    Videos("Videos"),
+    Live("Live"),
+    Playlists("Playlists"),
+}
+
+enum class ChannelSort(val label: String) {
+    Newest("Newest"),
+    Popular("Popular"),
+    Oldest("Oldest"),
+    LeastViews("Least views"),
+}
+
 @Stable
 class ChannelState(val url: String, private val scope: CoroutineScope) {
     var details by mutableStateOf<ChannelDetails?>(null)
         private set
+    var tab by mutableStateOf(ChannelTab.Videos)
+        private set
+    var sort by mutableStateOf(ChannelSort.Newest)
+        private set
+
+    // Videos
     var videos by mutableStateOf<List<VideoItem>>(emptyList())
         private set
     var loading by mutableStateOf(true)
         private set
     var error by mutableStateOf<String?>(null)
         private set
-    var subscribed by mutableStateOf<Boolean?>(null)
-        private set
     private var next: String? = null
     val hasMore get() = next != null
+    private var sortTokens: Map<String, String> = emptyMap()
+
+    // Live
+    var liveVideos by mutableStateOf<List<VideoItem>>(emptyList())
+        private set
+    var liveLoading by mutableStateOf(false)
+        private set
+    var liveError by mutableStateOf<String?>(null)
+        private set
+    private var liveNext: String? = null
+    val liveHasMore get() = liveNext != null
+    var liveLoaded by mutableStateOf(false)
+        private set
+
+    // Playlists
+    var playlists by mutableStateOf<List<PlaylistRef>>(emptyList())
+        private set
+    var playlistsLoading by mutableStateOf(false)
+        private set
+    var playlistsError by mutableStateOf<String?>(null)
+        private set
+    private var playlistsNext: String? = null
+    val playlistsHasMore get() = playlistsNext != null
+    var playlistsLoaded by mutableStateOf(false)
+        private set
+
+    var subscribed by mutableStateOf<Boolean?>(null)
+        private set
 
     init { load() }
 
@@ -74,28 +130,130 @@ class ChannelState(val url: String, private val scope: CoroutineScope) {
                 .onSuccess { d ->
                     details = d
                     if (Account.signedIn) launch { subscribed = runCatching { InnerTube.channelSubscribed(d.id) }.getOrNull() }
-                    runCatching { YouTube.channelVideos(d, null) }
-                        .onSuccess { p -> videos = p.videos; next = p.next }
-                        .onFailure { error = YouTube.friendlyError(it) }
+                    loadVideosFor(d, null)
+                    // Preload live + playlists so empty tabs can be hidden.
+                    launch {
+                        liveLoaded = true
+                        liveLoading = true
+                        runCatching { YouTube.channelLive(d, null) }
+                            .onSuccess { liveVideos = it.videos; liveNext = it.next }
+                        liveLoading = false
+                    }
+                    launch {
+                        playlistsLoaded = true
+                        playlistsLoading = true
+                        runCatching { YouTube.channelPlaylists(d, null) }
+                            .onSuccess { playlists = it.playlists; playlistsNext = it.next }
+                        playlistsLoading = false
+                    }
+                }
+                .onFailure { error = YouTube.friendlyError(it); loading = false }
+        }
+    }
+
+    private fun loadVideosFor(d: ChannelDetails, sortToken: String?) {
+        loading = true
+        scope.launch {
+            runCatching { YouTube.channelVideos(d, null, sortToken) }
+                .onSuccess { res ->
+                    videos = res.page.videos
+                    next = res.page.next
+                    if (res.sortTokens.isNotEmpty()) sortTokens = res.sortTokens
                 }
                 .onFailure { error = YouTube.friendlyError(it) }
             loading = false
         }
     }
 
+    fun selectTab(newTab: ChannelTab) {
+        if (tab == newTab) return
+        tab = newTab
+        val d = details ?: return
+        when (newTab) {
+            ChannelTab.Videos -> Unit
+            ChannelTab.Live -> if (!liveLoaded) {
+                liveLoaded = true
+                liveLoading = true
+                liveError = null
+                scope.launch {
+                    runCatching { YouTube.channelLive(d, null) }
+                        .onSuccess { liveVideos = it.videos; liveNext = it.next }
+                        .onFailure { liveError = YouTube.friendlyError(it) }
+                    liveLoading = false
+                }
+            }
+            ChannelTab.Playlists -> if (!playlistsLoaded) {
+                playlistsLoaded = true
+                playlistsLoading = true
+                playlistsError = null
+                scope.launch {
+                    runCatching { YouTube.channelPlaylists(d, null) }
+                        .onSuccess { playlists = it.playlists; playlistsNext = it.next }
+                        .onFailure { playlistsError = YouTube.friendlyError(it) }
+                    playlistsLoading = false
+                }
+            }
+        }
+    }
+
+    fun selectSort(newSort: ChannelSort) {
+        if (sort == newSort) return
+        sort = newSort
+        val d = details ?: return
+        val token = when (newSort) {
+            ChannelSort.Newest -> sortTokens.entries.firstOrNull { it.key.contains("latest", true) || it.key.contains("newest", true) }?.value
+            ChannelSort.Popular -> sortTokens.entries.firstOrNull { it.key.contains("popular", true) }?.value
+            ChannelSort.Oldest -> sortTokens.entries.firstOrNull { it.key.contains("oldest", true) }?.value
+            ChannelSort.LeastViews -> sortTokens.entries.firstOrNull { it.key.contains("least", true) || it.key.contains("view", true) }?.value
+        }
+        loadVideosFor(d, token)
+    }
+
     fun loadMore() {
         val d = details ?: return
-        val page = next ?: return
-        if (loading) return
-        loading = true
-        scope.launch {
-            runCatching { YouTube.channelVideos(d, page) }
-                .onSuccess { p ->
-                    val seen = videos.mapTo(HashSet()) { it.id }
-                    videos = videos + p.videos.filter { seen.add(it.id) }
-                    next = p.next
+        when (tab) {
+            ChannelTab.Videos -> {
+                val page = next ?: return
+                if (loading) return
+                loading = true
+                scope.launch {
+                    runCatching { YouTube.channelVideos(d, page) }
+                        .onSuccess { res ->
+                            val seen = videos.mapTo(HashSet()) { it.id }
+                            videos = videos + res.page.videos.filter { seen.add(it.id) }
+                            next = res.page.next
+                        }
+                    loading = false
                 }
-            loading = false
+            }
+            ChannelTab.Live -> {
+                val page = liveNext ?: return
+                if (liveLoading) return
+                liveLoading = true
+                scope.launch {
+                    runCatching { YouTube.channelLive(d, page) }
+                        .onSuccess { res ->
+                            val seen = liveVideos.mapTo(HashSet()) { it.id }
+                            liveVideos = liveVideos + res.videos.filter { seen.add(it.id) }
+                            liveNext = res.next
+                        }
+                    liveLoading = false
+                }
+            }
+            ChannelTab.Playlists -> {
+                val page = playlistsNext ?: return
+                if (playlistsLoading) return
+                playlistsLoading = true
+                scope.launch {
+                    runCatching { YouTube.channelPlaylists(d, page) }
+                        .onSuccess { res ->
+                            val seen = playlists.mapTo(HashSet()) { it.id }
+                            playlists = playlists + res.playlists.filter { seen.add(it.id) }
+                            playlistsNext = res.next
+                        }
+                    playlistsLoading = false
+                }
+            }
         }
     }
 
@@ -111,13 +269,25 @@ class ChannelState(val url: String, private val scope: CoroutineScope) {
 }
 
 @Composable
-fun ChannelScreen(state: ChannelState, contentPadding: PaddingValues, onBack: () -> Unit, onOpen: (VideoItem) -> Unit, onMessage: (String) -> Unit) {
+fun ChannelScreen(
+    state: ChannelState,
+    contentPadding: PaddingValues,
+    onBack: () -> Unit,
+    onOpen: (VideoItem) -> Unit,
+    onOpenPlaylist: (PlaylistRef) -> Unit = {},
+    onMessage: (String) -> Unit,
+    onSetStart: () -> Unit = {},
+) {
     val c = MaterialTheme.colorScheme
     val list = rememberLazyListState()
+    val clipboard = LocalClipboardManager.current
+    var descriptionOpen by remember(state.url) { mutableStateOf(false) }
     val nearEnd by remember {
         derivedStateOf { (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= list.layoutInfo.totalItemsCount - 4 }
     }
-    LaunchedEffect(nearEnd, state.videos.size) { if (nearEnd && state.videos.isNotEmpty()) state.loadMore() }
+    LaunchedEffect(nearEnd, state.videos.size, state.liveVideos.size, state.playlists.size) {
+        if (nearEnd) state.loadMore()
+    }
     Box(Modifier.fillMaxSize().background(c.surface)) {
     CollapsingHeaderLayout(
         header = {
@@ -131,6 +301,15 @@ fun ChannelScreen(state: ChannelState, contentPadding: PaddingValues, onBack: ()
                 state.details?.name.orEmpty(),
                 fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, letterSpacing = (-0.6).sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).pointerInput(Unit) {
+                    detectTapGestures(onLongPress = { clipboard.setText(AnnotatedString(state.details?.name.orEmpty())) })
+                },
+            )
+            Spacer(Modifier.width(6.dp))
+            CircleAction(
+                ImageVector.vectorResource(R.drawable.solar_home),
+                "Set as start screen",
+                onSetStart,
             )
         }
         },
@@ -141,8 +320,9 @@ fun ChannelScreen(state: ChannelState, contentPadding: PaddingValues, onBack: ()
                 Icons.Rounded.CloudOff, "Couldn't load this channel", state.error.orEmpty(),
                 action = { PillButton("Try again", state::load) },
             ) }
-            d == null -> Box(Modifier.fillMaxWidth().padding(top = top + 60.dp), Alignment.Center) {
-                CircularProgressIndicator(color = c.primary, strokeWidth = 4.dp, modifier = Modifier.size(36.dp))
+            d == null -> Column(Modifier.padding(top = top + 20.dp)) {
+                VideoCardSkeleton()
+                VideoCardSkeleton()
             }
             else -> LazyColumn(state = list, contentPadding = contentPadding.withTop(top)) {
                 item(key = "header") {
@@ -165,15 +345,129 @@ fun ChannelScreen(state: ChannelState, contentPadding: PaddingValues, onBack: ()
                         }
                         if (d.description.isNotBlank()) {
                             Spacer(Modifier.height(12.dp))
-                            Text(d.description, color = c.onSurfaceVariant, fontSize = 13.5.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Column(Modifier.pressable(pressedScale = 0.99f) { descriptionOpen = !descriptionOpen }) {
+                                Text(
+                                    d.description,
+                                    color = c.onSurfaceVariant, fontSize = 13.5.sp, lineHeight = 19.sp,
+                                    maxLines = if (descriptionOpen) Int.MAX_VALUE else 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                // Only offer the toggle when the text is actually clipped.
+                                Text(
+                                    if (descriptionOpen) "less" else "more",
+                                    color = c.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 12.5.sp,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
                         }
                     }
                 }
-                item(key = "videosTitle") { SectionTitle("Videos") }
-                items(state.videos, key = { it.id }) { video -> VideoCard(video, onClick = { onOpen(video) }) }
-                if (state.loading || state.hasMore) item {
-                    Box(Modifier.fillMaxWidth().padding(28.dp), Alignment.Center) {
-                        CircularProgressIndicator(color = c.primary, strokeWidth = 4.dp, modifier = Modifier.size(32.dp))
+                item(key = "tabs") {
+                    val visibleTabs = buildList {
+                        add(ChannelTab.Videos)
+                        if (!(state.liveLoaded && state.liveVideos.isEmpty())) add(ChannelTab.Live)
+                        if (!(state.playlistsLoaded && state.playlists.isEmpty())) add(ChannelTab.Playlists)
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        visibleTabs.forEach { tab ->
+                            val active = state.tab == tab
+                            Box(
+                                Modifier
+                                    .pressable { state.selectTab(tab) }
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(if (active) c.primary else c.surfaceContainerHigh)
+                                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    tab.label,
+                                    color = if (active) c.onPrimary else c.onSurface,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.5.sp,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (state.tab == ChannelTab.Videos) {
+                    item(key = "sortRow") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            ChannelSort.entries.forEach { sort ->
+                                val active = state.sort == sort
+                                Box(
+                                    Modifier
+                                        .pressable(enabled = !state.loading) { state.selectSort(sort) }
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (active) c.secondaryContainer else c.surfaceContainer)
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        sort.label,
+                                        color = if (active) c.onSecondaryContainer else c.onSurfaceVariant,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (state.loading && state.videos.isEmpty()) {
+                        items(3) { VideoCardSkeleton() }
+                    } else {
+                        items(state.videos.filterNot { ContentFilter.hideVideo(it) || HiddenVideos.isHidden(it.id) }, key = { it.id }) { video -> VideoCard(video, onClick = { onOpen(video) }) }
+                        if (state.loading && state.hasMore) item { VideoCardSkeleton() }
+                    }
+                } else if (state.tab == ChannelTab.Live) {
+                    if (state.liveLoading && state.liveVideos.isEmpty()) {
+                        items(3) { VideoCardSkeleton() }
+                    } else if (state.liveVideos.isEmpty()) {
+                        item {
+                            EmptyState(
+                                Icons.Rounded.LiveTv,
+                                "No live streams",
+                                "This channel has no active or scheduled live streams.",
+                            )
+                        }
+                    } else {
+                        items(state.liveVideos.filterNot { ContentFilter.hideVideo(it) }, key = { it.id }) { video -> VideoCard(video, onClick = { onOpen(video) }) }
+                        if (state.liveLoading && state.liveHasMore) item { VideoCardSkeleton() }
+                    }
+                } else if (state.tab == ChannelTab.Playlists) {
+                    if (state.playlistsLoading && state.playlists.isEmpty()) {
+                        items(3) { VideoRowSkeleton(Modifier.padding(horizontal = 16.dp)) }
+                    } else if (state.playlists.isEmpty()) {
+                        item {
+                            EmptyState(
+                                Icons.Rounded.VideoLibrary,
+                                "No playlists",
+                                "This channel has no public playlists.",
+                            )
+                        }
+                    } else {
+                        items(state.playlists.chunked(2), key = { row -> row.joinToString { it.id } }) { row ->
+                            Row(Modifier.padding(horizontal = 16.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                row.forEach { pl ->
+                                    PlaylistTile(
+                                        pl,
+                                        Modifier.weight(1f),
+                                        onClick = { onOpenPlaylist(pl) },
+                                    )
+                                }
+                                if (row.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                        }
+                        if (state.playlistsLoading && state.playlistsHasMore) item { VideoRowSkeleton(Modifier.padding(horizontal = 16.dp)) }
                     }
                 }
             }

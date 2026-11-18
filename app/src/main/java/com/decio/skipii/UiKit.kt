@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +33,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import com.decio.skipii.R
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -124,7 +127,7 @@ fun BrandMark() {
             .background(Brush.linearGradient(listOf(c.primary, c.primary.copy(alpha = 0.82f)))),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Rounded.FastForward, contentDescription = null, tint = c.onPrimary, modifier = Modifier.size(20.dp))
+        Icon(painterResource(R.drawable.icon), contentDescription = null, tint = c.onPrimary, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -246,9 +249,17 @@ fun ChannelAvatar(url: String?, name: String, size: Int = 40) {
     }
 }
 
-/** Full-width feed card: rounded thumbnail inside a 28 dp card, then avatar + title + meta. */
+/**
+ * Full-width feed card: rounded thumbnail inside a 28 dp card, then avatar + title + meta.
+ * [selected] is null outside bulk selection; otherwise it draws the tick and tap targets.
+ */
 @Composable
-fun VideoCard(video: VideoItem, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun VideoCard(
+    video: VideoItem,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    selected: Boolean? = null,
+) {
     val c = MaterialTheme.colorScheme
     val menu = LocalVideoMenu.current
     val shape = RoundedCornerShape(28.dp)
@@ -259,6 +270,7 @@ fun VideoCard(video: VideoItem, onClick: () -> Unit, modifier: Modifier = Modifi
             .prefetchOnPress(video.id)
             .pressable(pressedScale = 0.97f, onLongClick = { menu(video) }, onClick = onClick)
             .clip(shape)
+            .then(if (selected == true) Modifier.border(2.dp, c.primary, shape) else Modifier)
             .background(c.surfaceContainerLow)
             .padding(6.dp),
     ) {
@@ -266,6 +278,17 @@ fun VideoCard(video: VideoItem, onClick: () -> Unit, modifier: Modifier = Modifi
             Thumbnail(video.thumbnail, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
             DurationPill(video.durationSec, Modifier.align(Alignment.BottomEnd).padding(10.dp))
             ResumeBar(video.id, Modifier.align(Alignment.BottomStart))
+            if (selected != null) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(9.dp).size(28.dp)
+                        .clip(CircleShape)
+                        .background(if (selected) c.primary else Color.Black.copy(alpha = 0.5f))
+                        .border(1.5.dp, if (selected) c.primary else Color.White.copy(alpha = 0.9f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected) Icon(Icons.Rounded.Check, "Selected", tint = c.onPrimary, modifier = Modifier.size(19.dp))
+                }
+            }
         }
         Row(modifier = Modifier.padding(start = 8.dp, end = 6.dp, top = 12.dp, bottom = 10.dp)) {
             val openChannel = LocalChannelOpener.current

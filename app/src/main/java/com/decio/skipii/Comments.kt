@@ -302,7 +302,7 @@ fun CommentsCard(state: CommentsState, onOpen: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            state.loading -> CircularProgressIndicator(color = c.primary, strokeWidth = 3.dp, modifier = Modifier.size(22.dp))
+            state.loading -> SkeletonBox(Modifier.fillMaxWidth().height(38.dp), RoundedCornerShape(10.dp))
             state.error != null -> Text(state.error.orEmpty(), color = c.onSurfaceVariant, fontSize = 13.5.sp)
             else -> Text(if (Account.signedIn) "No comments yet. Add the first one." else "No comments yet.", color = c.onSurfaceVariant, fontSize = 13.5.sp)
         }
@@ -435,11 +435,11 @@ fun CommentsPanel(state: CommentsState, partialTop: Dp, onClose: () -> Unit) {
             LaunchedEffect(nearEnd) { if (nearEnd) state.loadMore() }
             LazyColumn(state = list, modifier = Modifier.weight(1f).nestedScroll(listPull)) {
                 items(state.comments, key = { it.id }) { comment -> CommentRow(comment, state) }
-                if (state.loading || state.hasMore) item {
-                    Box(Modifier.fillMaxWidth().padding(20.dp), Alignment.Center) {
-                        CircularProgressIndicator(color = c.primary, strokeWidth = 3.dp, modifier = Modifier.size(26.dp))
-                    }
-                }
+                if (state.loading && state.comments.isEmpty()) {
+                    items(3) { CommentSkeleton() }
+                } else if (state.loading) {
+                    item { CommentSkeleton() }
+                } else if (state.hasMore) item { Spacer(Modifier.height(56.dp)) }
                 if (!state.loading && state.comments.isEmpty()) item {
                     Text(
                         if (state.disabled) "Comments are turned off for this video." else "No comments yet.",
@@ -518,7 +518,7 @@ private fun Composer(state: CommentsState) {
                     .background(if (canSend) c.primary else c.surfaceContainerHighest),
                 contentAlignment = Alignment.Center,
             ) {
-                if (state.posting) CircularProgressIndicator(color = c.onPrimary, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                if (state.posting) Icon(Icons.AutoMirrored.Rounded.Send, "Posting", tint = c.onPrimary.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
                 else Icon(Icons.AutoMirrored.Rounded.Send, "Post", tint = if (canSend) c.onPrimary else c.onSurfaceVariant, modifier = Modifier.size(20.dp))
             }
         }
@@ -593,7 +593,7 @@ private fun CommentRow(comment: Comment, state: CommentsState, isReply: Boolean 
                     )
                     if (busy) {
                         Spacer(Modifier.width(8.dp))
-                        CircularProgressIndicator(color = c.primary, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                        SkeletonBox(Modifier.width(30.dp).height(10.dp), RoundedCornerShape(5.dp))
                     }
                 }
             }

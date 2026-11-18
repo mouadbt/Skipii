@@ -43,9 +43,12 @@ import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -74,6 +77,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineStart
@@ -107,7 +111,12 @@ fun SpeedButton(state: PlayerState) {
             .background(bg, ModeButtonShape),
         contentAlignment = Alignment.Center,
     ) {
-        if (normal) Icon(Icons.Rounded.Speed, "Playback speed", tint = ink, modifier = Modifier.size(20.dp))
+        if (normal) Icon(
+            androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_speed),
+            "Playback speed",
+            tint = ink,
+            modifier = Modifier.size(20.dp),
+        )
         else Text(PlaybackSpeed.label(state.speed) + "×", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Black)
     }
 }
@@ -128,10 +137,37 @@ fun AudioOnlyButton(state: PlayerState) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            if (on) Icons.Rounded.Headphones else Icons.Outlined.Headphones,
+            androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_headphones),
             if (on) "Audio only is on" else "Audio only",
             tint = ink, modifier = Modifier.size(20.dp),
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SpeedSheet(state: PlayerState, onDismiss: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surfaceContainerLow,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+        ) {
+            Text(
+                "Playback speed",
+                fontFamily = RoundedHeavy,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 21.sp,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            SpeedPanelContent(state)
+            Spacer(Modifier.height(28.dp))
+        }
     }
 }
 

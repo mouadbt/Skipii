@@ -83,6 +83,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -277,43 +278,24 @@ fun VideoContent(
             )
             val edge = if (fullscreen) Modifier.windowInsetsPadding(WindowInsets.displayCutout).padding(horizontal = 12.dp, vertical = 8.dp) else Modifier
             Box(Modifier.fillMaxSize().then(edge)) {
-                // Top row: minimize / exit fullscreen, title (fullscreen), quality.
+                // Top row: title on the left, picture-in-picture on the right. Fullscreen keeps
+                // its title here too, so the video never loses its name while the details hide.
                 Row(
                     Modifier.align(Alignment.TopStart).fillMaxWidth().padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // No minimize button: swipe the player down (or Back) instead.
-                    if (fullscreen) {
-                        Text(
-                            state.current?.title.orEmpty(),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                    } else {
-                        Spacer(Modifier.weight(1f))
-                    }
-                    // The label is the resolution actually decoded; the requested one until known.
-                    (state.decodedHeight?.let { "${it}p" } ?: state.details?.quality)?.let { quality ->
-                        Box(
-                            Modifier
-                                .pressable(enabled = enabled) { touched(); state.sheet = PlayerSheet.Quality }
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.38f))
-                                .padding(horizontal = 11.dp, vertical = 7.dp),
-                        ) {
-                            Text(
-                                if (QualityPreference.height == null) "Auto · $quality" else quality,
-                                color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Black,
-                            )
-                        }
-                    }
+                    Text(
+                        state.current?.title.orEmpty(),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = if (fullscreen) 16.sp else 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                     if (pip?.supported == true) {
                         Spacer(Modifier.width(8.dp))
-                        GlassButton(Icons.Rounded.PictureInPictureAlt, "Picture-in-picture", enabled, size = 30.dp, iconSize = 18.dp) {
+                        GlassButton(ImageVector.vectorResource(R.drawable.solar_pip), "Picture-in-picture", enabled, size = 30.dp, iconSize = 18.dp) {
                             controlsVisible = false
                             if (!pip.enter(state.videoAspect)) state.actionMessage = "Picture-in-picture is turned off for Skipii in Settings."
                         }
@@ -325,7 +307,7 @@ fun VideoContent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val skip = if (fullscreen) 56.dp else 48.dp
-                    GlassButton(Icons.Rounded.Replay10, "Back 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
+                    GlassButton(ImageVector.vectorResource(R.drawable.solar_back10), "Back 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
                         touched(); state.seekBy(-10_000)
                     }
                     MorphPlayButton(
@@ -337,25 +319,50 @@ fun VideoContent(
                         content = Color.White,
                         enabled = enabled,
                     ) { touched(); state.togglePlay() }
-                    GlassButton(Icons.Rounded.Forward10, "Forward 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
+                    GlassButton(ImageVector.vectorResource(R.drawable.solar_forward10), "Forward 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
                         touched(); state.seekBy(10_000)
                     }
                 }
                 Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 14.dp, end = 8.dp, bottom = 6.dp)) {
                     var scrubPreview by remember { mutableStateOf<Long?>(null) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        // Time sits in the bottom-left corner; the control cluster stays above
+                        // the timeline on the right (Derek).
                         Text(formatDuration(scrubPreview ?: state.positionMs), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Text(
                             " / " + formatDuration(state.durationMs),
                             color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f),
                         )
+                        Spacer(Modifier.weight(1f))
                         state.askSegment?.let { segment ->
                             SkipSegmentPill(segment, enabled = true) { touched(); state.skipSegment(segment) }
                             Spacer(Modifier.width(6.dp))
                         }
+                        // Bottom-right above the timeline: Speed, Quality, Minimize, Fullscreen (right to left: Fullscreen, Minimize, Quality, Speed)
+                        OverlayPill(
+                            text = PlaybackSpeed.label(state.speed) + "×",
+                            description = "Playback speed",
+                            enabled = enabled,
+                        ) { touched(); state.sheet = PlayerSheet.Speed }
+                        (state.decodedHeight?.let { "${it}p" } ?: state.details?.quality)?.let { quality ->
+                            Spacer(Modifier.width(6.dp))
+                            OverlayPill(
+                                text = if (QualityPreference.height == null) "Auto · $quality" else quality,
+                                description = "Quality",
+                                enabled = enabled,
+                            ) { touched(); state.sheet = PlayerSheet.Quality }
+                        }
+                        if (!fullscreen) {
+                            Spacer(Modifier.width(6.dp))
+                            GlassButton(ImageVector.vectorResource(R.drawable.solar_down), "Minimize player", enabled, size = 34.dp, iconSize = 22.dp, tinted = false) {
+                                onCollapse()
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
                         GlassButton(
-                            if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                            ImageVector.vectorResource(
+                                if (fullscreen) R.drawable.solar_quitfullscreen else R.drawable.solar_fullscreen,
+                            ),
                             if (fullscreen) "Exit fullscreen" else "Fullscreen",
                             enabled,
                             size = 34.dp,
@@ -558,11 +565,13 @@ fun BoxScope.ScreenGestureHud(gestures: ScreenGestures) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            when {
-                kind == ScreenGestureKind.Volume && fraction <= 0f -> Icons.Rounded.VolumeOff
-                kind == ScreenGestureKind.Volume -> Icons.Rounded.VolumeUp
-                else -> Icons.Rounded.BrightnessMedium
-            },
+            ImageVector.vectorResource(
+                when {
+                    kind == ScreenGestureKind.Volume && fraction <= 0f -> R.drawable.solar_muted
+                    kind == ScreenGestureKind.Volume -> R.drawable.solar_volume
+                    else -> R.drawable.solar_brightness
+                },
+            ),
             contentDescription = null,
             tint = Color.White,
             modifier = Modifier.size(20.dp),
@@ -590,7 +599,7 @@ private fun SkipSegmentPill(segment: SponsorBlock.Segment, enabled: Boolean, mod
     ) {
         val ink = if (segment.category.color.luminance() > 0.45f) Color(0xFF151515) else Color.White
         Text("Skip ${segment.category.short}", color = ink, fontSize = 12.sp, fontWeight = FontWeight.Black)
-        Icon(Icons.Rounded.SkipNext, null, tint = ink, modifier = Modifier.size(18.dp))
+        Icon(ImageVector.vectorResource(R.drawable.solar_skipnext), null, tint = ink, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -722,6 +731,20 @@ private fun GlassButton(
             .background(if (tinted) Color.Black.copy(alpha = 0.38f) else Color.Black.copy(alpha = 0f)),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, description, tint = Color.White, modifier = Modifier.size(iconSize)) }
+}
+
+/** A small glass label in the overlay controls (quality, speed). */
+@Composable
+private fun OverlayPill(text: String, description: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .pressable(enabled = enabled, onClick = onClick)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.38f))
+            .padding(horizontal = 11.dp, vertical = 7.dp),
+    ) {
+        Text(text, color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Black, maxLines = 1)
+    }
 }
 
 private const val SeekStepMs = 10_000L

@@ -43,7 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -69,13 +72,13 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
     Column(Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).pressable(onClick = onCancel), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Close, "Cancel")
+                Icon(androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_close), "Cancel")
             }
             Spacer(Modifier.width(6.dp))
             Column(Modifier.weight(1f)) {
                 Text("Sign in to YouTube", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.Lock, null, tint = c.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                    Icon(androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_lock), null, tint = c.onSurfaceVariant, modifier = Modifier.size(12.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("accounts.google.com · kept encrypted on this phone", color = c.onSurfaceVariant, fontSize = 12.sp)
                 }
@@ -127,8 +130,10 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
                     verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
                 ) {
                     if (error == null) {
-                        CircularProgressIndicator(color = c.primary, strokeWidth = 4.dp, modifier = Modifier.size(36.dp))
+                        SkeletonBox(Modifier.size(52.dp), androidx.compose.foundation.shape.CircleShape)
                         Spacer(Modifier.height(16.dp))
+                        SkeletonBox(Modifier.width(172.dp).height(16.dp), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text("Finishing sign-in…", fontWeight = FontWeight.Bold)
                     } else {
                         Text(error.orEmpty(), textAlign = TextAlign.Center, color = c.onSurfaceVariant)
@@ -180,21 +185,43 @@ fun AccountSheet(onSignIn: () -> Unit, onSignedOut: () -> Unit, onDismiss: () ->
                 Spacer(Modifier.height(20.dp))
                 PillButton("Sign in with Google", { onDismiss(); onSignIn() })
             } else {
-                ChannelAvatar(profile.avatar, profile.name, size = 72)
-                Spacer(Modifier.height(12.dp))
-                Text(profile.name, fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
-                profile.handle?.let { Text(it, color = c.onSurfaceVariant, fontSize = 14.sp) }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    ChannelAvatar(profile.avatar, profile.name, size = 56)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(profile.name, fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        profile.handle?.let { Text(it, color = c.onSurfaceVariant, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
+                    CircleAction(ImageVector.vectorResource(R.drawable.solar_logout), "Sign out") { Account.signOut(); onSignedOut(); onDismiss() }
+                }
                 Spacer(Modifier.height(20.dp))
-                PillButton("Sign out", { Account.signOut(); onSignedOut(); onDismiss() }, Icons.AutoMirrored.Rounded.Logout)
             }
             // Settings live here (Derek's choice): every tab's header has this sheet.
             Spacer(Modifier.height(28.dp))
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surfaceContainer).padding(18.dp)) {
-                AppearanceSettings()
+            SettingsSection("Appearance", "Theme, AMOLED black and colors") {
+                AppearanceSettings(showHeader = false)
             }
-            Spacer(Modifier.height(12.dp))
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surfaceContainer).padding(18.dp)) {
-                SponsorBlockSettings()
+            Spacer(Modifier.height(10.dp))
+            SettingsSection("Navigation", "Start screen, visible tabs and nav bar") {
+                NavigationSettingsCard()
+                Spacer(Modifier.height(16.dp))
+                AppearanceNavOptions()
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingsSection("Player", "What the watch page shows and its buttons") {
+                PlayerSettings(showHeader = false)
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingsSection("Downloads", "Offline quality and saved videos") {
+                DownloadSettingsCard(showHeader = false)
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingsSection("SponsorBlock", "Skip sponsor reads and other segments") {
+                SponsorBlockSettings(showHeader = false)
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingsSection("Content filters", "Hide videos or channels containing a word") {
+                ContentFilterSettings(showHeader = false)
             }
         }
     }

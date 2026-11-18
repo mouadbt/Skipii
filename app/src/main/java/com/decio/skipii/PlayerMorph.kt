@@ -163,6 +163,24 @@ class RoundRectClip(private val rect: Rect, private val radius: Float) : Shape {
         Outline.Rounded(RoundRect(rect, CornerRadius(radius.coerceAtLeast(0f))))
 }
 
+/** Clips to a rounded rect with independent top and bottom corner radii. */
+class MorphCardClip(
+    private val rect: Rect,
+    private val topRadius: Float,
+    private val bottomRadius: Float,
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Rounded(
+            RoundRect(
+                rect = rect,
+                topLeft = CornerRadius(topRadius.coerceAtLeast(0f)),
+                topRight = CornerRadius(topRadius.coerceAtLeast(0f)),
+                bottomRight = CornerRadius(bottomRadius.coerceAtLeast(0f)),
+                bottomLeft = CornerRadius(bottomRadius.coerceAtLeast(0f)),
+            )
+        )
+}
+
 fun lerpF(a: Float, b: Float, t: Float) = a + (b - a) * t
 
 fun lerpRect(a: Rect, b: Rect, t: Float) = Rect(lerp(a.topLeft, b.topLeft, t), lerp(a.bottomRight, b.bottomRight, t))

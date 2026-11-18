@@ -164,6 +164,20 @@ class PlaybackService : MediaSessionService() {
             mediaItems: MutableList<MediaItem>,
         ): ListenableFuture<MutableList<MediaItem>> = resolver.submit<MutableList<MediaItem>> {
             mediaItems.map { item ->
+                // A finished download plays from the app's own files, so this works with no network.
+                val offline = DownloadStore.entry(item.mediaId)
+                if (offline != null) {
+                    return@map item.buildUpon()
+                        .setUri("skipii-offline://${item.mediaId}")
+                        .setMediaMetadata(
+                            item.mediaMetadata.buildUpon()
+                                .setTitle(item.mediaMetadata.title ?: offline.video.title)
+                                .setArtist(item.mediaMetadata.artist ?: offline.video.channel)
+                                .setMediaType(MediaMetadata.MEDIA_TYPE_VIDEO)
+                                .build(),
+                        )
+                        .build()
+                }
                 val info = StreamCache.getOrLoad(item.mediaId)
                 item.buildUpon()
                     .setUri(YouTube.watchUrl(item.mediaId))
@@ -452,11 +466,12 @@ private class SponsorSkipper(private val player: ExoPlayer) : Player.Listener {
  * whole stream in one go gets throttled to a crawl.
  */
 @OptIn(UnstableApi::class)
-private class YouTubeMediaSourceFactory(context: Context) : MediaSource.Factory {
+private class YouTubeMediaSourceFactory(private val context: Context) : MediaSource.Factory {
     private val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(
         context,
         OkHttpDataSource.Factory(Net.client).setUserAgent(Net.USER_AGENT),
     )
+    private val fileDataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(context)
     private val fallback = DefaultMediaSourceFactory(dataSourceFactory)
 
     override fun setDrmSessionManagerProvider(provider: DrmSessionManagerProvider): MediaSource.Factory =
@@ -468,6 +483,7 @@ private class YouTubeMediaSourceFactory(context: Context) : MediaSource.Factory 
     override fun getSupportedTypes(): IntArray = fallback.supportedTypes
 
     override fun createMediaSource(mediaItem: MediaItem): MediaSource {
+        DownloadStore.entry(mediaItem.mediaId)?.let { return offlineSource(it, mediaItem) }
         val info = StreamCache.get(mediaItem.mediaId) ?: return fallback.createMediaSource(mediaItem)
         val picked = StreamSelection.pick(info)
         // Auto: every quality as one adaptive set. A chosen quality stays pinned below.
@@ -522,6 +538,18 @@ private class YouTubeMediaSourceFactory(context: Context) : MediaSource.Factory 
             listOf(Period("0", 0, listOf(AdaptationSet(0, C.TRACK_TYPE_VIDEO, representations, emptyList(), emptyList(), emptyList())))),
         )
         return DashMediaSource.Factory(dataSourceFactory).createMediaSource(manifest, mediaItem)
+    }
+
+    /** A finished download: one progressive file, or a video and audio pair merged locally. */
+    private fun offlineSource(entry: DownloadEntry, mediaItem: MediaItem): MediaSource {
+        val factory = ProgressiveMediaSource.Factory(fileDataSourceFactory)
+        fun local(name: String): MediaSource = factory.createMediaSource(
+            mediaItem.buildUpon().setUri(Uri.fromFile(DownloadStore.file(name))).build(),
+        )
+        val video = local(entry.videoFile)
+        val audio = entry.audioFile?.let { local(it) }
+        Log.i("Skipii", "media source ${mediaItem.mediaId}: offline ${entry.height}p${if (audio != null) " (separate audio)" else ""}")
+        return if (audio != null) MergingMediaSource(true, true, video, audio) else video
     }
 
     private fun source(stream: Stream, durationSec: Long, mediaItem: MediaItem): MediaSource {

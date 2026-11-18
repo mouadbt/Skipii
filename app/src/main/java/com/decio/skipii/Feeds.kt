@@ -2,7 +2,9 @@ package com.decio.skipii
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -147,18 +149,37 @@ class LibraryData(scope: CoroutineScope) {
     val history = FeedState(scope) { InnerTube.history(it) }
     var channels by mutableStateOf<List<ChannelRef>>(emptyList())
         private set
+    var channelsLoading by mutableStateOf(false)
+        private set
+    var channelsError by mutableStateOf<String?>(null)
+        private set
     var playlists by mutableStateOf<List<PlaylistRef>>(emptyList())
         private set
     private val scope = scope
 
-    fun loadChannels() = scope.launch { runCatching { InnerTube.channels() }.onSuccess { channels = it } }
+    fun loadChannels() = scope.launch {
+        if (channelsLoading) return@launch
+        channelsLoading = true
+        channelsError = null
+        runCatching { InnerTube.channels() }
+            .onSuccess { channels = it }
+            .onFailure { channelsError = YouTube.friendlyError(it) }
+        channelsLoading = false
+    }
+
+    /** Unsubscribed channels leave the list at once; the next load is then a no-op visually. */
+    fun removeChannels(ids: Set<String>) {
+        channels = channels.filterNot { it.id in ids }
+    }
+
     fun loadPlaylists() = scope.launch { runCatching { InnerTube.playlists() }.onSuccess { playlists = it } }
 
     fun playlistFeed(id: String) = FeedState(scope) { InnerTube.playlist(id, it) }
 
     fun reset() {
         home.reset(); subscriptions.reset(); history.reset()
-        channels = emptyList(); playlists = emptyList()
+        channels = emptyList(); channelsLoading = false; channelsError = null
+        playlists = emptyList()
     }
 }
 
@@ -186,6 +207,12 @@ fun FeedList(
     pullToRefresh: Boolean = true,
     /** Collapsing header height: the refresh spinner appears just below it. */
     indicatorTop: Dp = 0.dp,
+    /** Videos to hide without refetching the page (a library removal made elsewhere). */
+    exclude: (VideoItem) -> Boolean = { false },
+    /** Bulk selection: taps toggle a video instead of opening it, and cards show ticks. */
+    selectionMode: Boolean = false,
+    selectedIds: Set<String> = emptySet(),
+    onToggleSelect: (VideoItem) -> Unit = {},
 ) {
     val c = MaterialTheme.colorScheme
     val list = rememberScrollToTop(scrollToTop)
@@ -201,7 +228,13 @@ fun FeedList(
     PullToRefresh(enabled = pullToRefresh, refreshing = feed.refreshing, onRefresh = feed::refresh, topPadding = indicatorTop) {
     LazyColumn(state = list, contentPadding = contentPadding) {
         header()
-        items(feed.videos, key = { it.id }) { video -> VideoCard(video, onClick = { onOpen(video) }) }
+        items(feed.videos.filterNot { exclude(it) || ContentFilter.hideVideo(it) || HiddenVideos.isHidden(it.id) }, key = { it.id }) { video ->
+            VideoCard(
+                video,
+                onClick = { if (selectionMode) onToggleSelect(video) else onOpen(video) },
+                selected = if (selectionMode) video.id in selectedIds else null,
+            )
+        }
         when {
             // No keys on these trailing items: a keyed loader at index 0 makes LazyColumn
             // hold it in view when videos arrive above it, landing at the bottom of the page.
@@ -213,11 +246,10 @@ fun FeedList(
                     action = { PillButton("Try again", { feed.refresh() }) },
                 )
             }
-            feed.loading || feed.hasMore -> item {
-                Box(Modifier.fillMaxWidth().padding(28.dp), Alignment.Center) {
-                    CircularProgressIndicator(color = c.primary, strokeWidth = 4.dp, modifier = Modifier.size(32.dp))
-                }
-            }
+            feed.loading && feed.videos.isEmpty() -> items(4) { VideoCardSkeleton() }
+            feed.loading -> item { VideoCardSkeleton() }
+            // A tall empty cell keeps the end-sentinel reachable so loadMore() still fires.
+            feed.hasMore -> item { Spacer(Modifier.height(72.dp)) }
         }
     }
     }

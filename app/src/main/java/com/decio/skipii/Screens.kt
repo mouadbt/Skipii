@@ -42,9 +42,12 @@ import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -60,8 +64,11 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -89,7 +96,7 @@ fun HomeScreen(
     LaunchedEffect(signedIn) { if (signedIn) lib.home.ensureLoaded() }
     CollapsingHeaderLayout(
         resetKey = scrollToTop to lib.home.generation,
-        header = { ScreenHeader(title = "Skipii", brandMark = true) { AccountAction(onAccount) } },
+        header = { ScreenHeader(title = "onevoidtube", brandMark = true) { AccountAction(onAccount) } },
     ) { top ->
         if (signedIn) {
             FeedList(lib.home, contentPadding.withTop(top), onOpen, scrollToTop = scrollToTop, indicatorTop = top)
@@ -122,7 +129,9 @@ fun SubscriptionsScreen(
     onSignIn: () -> Unit,
     onAccount: () -> Unit,
     scrollToTop: Int = 0,
+    onOpenChannels: () -> Unit = {},
 ) {
+    val openChannel = LocalChannelOpener.current
     val signedIn = Account.signedIn
     LaunchedEffect(signedIn) {
         if (signedIn) {
@@ -137,7 +146,13 @@ fun SubscriptionsScreen(
         if (signedIn) {
             FeedList(lib.subscriptions, contentPadding.withTop(top), onOpen, header = {
                 // Always present (empty until loaded) so its arrival never shifts the list.
-                item(key = "channels") { if (lib.channels.isNotEmpty()) ChannelRail(lib.channels) }
+                item(key = "channels") {
+                    if (lib.channels.isNotEmpty()) ChannelRail(
+                        lib.channels,
+                        onOpenChannel = { ch -> openChannel("https://www.youtube.com/channel/${ch.id}") },
+                        onSeeAll = onOpenChannels,
+                    )
+                }
             }, scrollToTop = scrollToTop, indicatorTop = top)
         } else {
             LazyColumn(contentPadding = contentPadding.withTop(top)) {
@@ -155,24 +170,6 @@ fun SubscriptionsScreen(
 }
 
 @Composable
-private fun ChannelRail(channels: List<ChannelRef>) {
-    val c = MaterialTheme.colorScheme
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
-    ) {
-        items(channels, key = { it.id }) { ch ->
-            Column(Modifier.width(64.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                ChannelAvatar(ch.avatar, ch.name, size = 56)
-                Spacer(Modifier.height(6.dp))
-                Text(ch.name, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
-}
-
-@Composable
 fun LibraryScreen(
     lib: LibraryData,
     contentPadding: PaddingValues,
@@ -182,17 +179,65 @@ fun LibraryScreen(
     onSignIn: () -> Unit,
     onAccount: () -> Unit,
     scrollToTop: Int = 0,
+    onMessage: (String) -> Unit = {},
 ) {
     val signedIn = Account.signedIn
+    val scope = rememberCoroutineScope()
+    var selectingPlaylists by remember { mutableStateOf(false) }
+    var selectedPlaylists by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var working by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    val ownIds = lib.playlists.mapTo(HashSet()) { it.id }
     LaunchedEffect(signedIn) {
         if (signedIn) {
             lib.history.ensureLoaded()
             if (lib.playlists.isEmpty()) lib.loadPlaylists()
         }
     }
+    fun exitSelection() {
+        selectingPlaylists = false
+        selectedPlaylists = emptySet()
+    }
+    LaunchedEffect(lib.playlists) {
+        selectedPlaylists = selectedPlaylists.intersect(ownIds)
+        if (selectingPlaylists && ownIds.isEmpty()) selectingPlaylists = false
+    }
     CollapsingHeaderLayout(
         resetKey = scrollToTop to lib.history.generation,
-        header = { ScreenHeader(title = "Library") { AccountAction(onAccount) } },
+        header = {
+            Column {
+                ScreenHeader(
+                    title = "Library",
+                    actions = {
+                        if (signedIn && lib.playlists.isNotEmpty() && !selectingPlaylists) {
+                            CircleAction(
+                                androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_check),
+                                "Select playlists",
+                            ) { selectingPlaylists = true }
+                        }
+                        AccountAction(onAccount)
+                    },
+                )
+                if (selectingPlaylists) {
+                    BulkSelectionBar(
+                        count = selectedPlaylists.size,
+                        allSelected = ownIds.isNotEmpty() && selectedPlaylists.size == ownIds.size,
+                        working = working,
+                        onClose = ::exitSelection,
+                        onAll = {
+                            selectedPlaylists = if (selectedPlaylists.size == ownIds.size) emptySet() else ownIds
+                        },
+                    ) {
+                        BulkAction(
+                            ImageVector.vectorResource(R.drawable.solar_trash),
+                            "Delete",
+                            tint = MaterialTheme.colorScheme.error,
+                            enabled = selectedPlaylists.isNotEmpty() && !working,
+                        ) { confirmDelete = true }
+                    }
+                }
+            }
+        },
     ) { top ->
         PullToRefresh(
             enabled = signedIn,
@@ -201,6 +246,20 @@ fun LibraryScreen(
             topPadding = top,
         ) {
         LazyColumn(state = rememberScrollToTop(scrollToTop), contentPadding = contentPadding.withTop(top)) {
+            // Downloads stay available signed out and offline: they live in the app itself.
+            if (DownloadStore.entries.isNotEmpty()) {
+                item(key = "downloadsTitle") { SectionTitle("Downloads") }
+                item(key = "downloads") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(DownloadStore.entries, key = { "d-" + it.video.id }) { entry ->
+                            DownloadCard(entry) { onOpen(entry.video) }
+                        }
+                    }
+                }
+            }
             if (!signedIn) {
                 item {
                     EmptyState(
@@ -222,8 +281,8 @@ fun LibraryScreen(
                     ) {
                         items(history.take(20), key = { "h-" + it.id }) { video -> HistoryCard(video) { onOpen(video) } }
                     }
-                    lib.history.loading -> Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, strokeWidth = 4.dp, modifier = Modifier.size(28.dp))
+                    lib.history.loading -> Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        repeat(3) { VideoRowSkeleton() }
                     }
                     else -> Text(
                         lib.history.error ?: "Nothing watched yet.",
@@ -240,12 +299,19 @@ fun LibraryScreen(
             items((pinned + lib.playlists).chunked(2), key = { row -> row.joinToString { it.id } }) { row ->
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     row.forEach { pl ->
+                        val selectable = selectingPlaylists && pl.id in ownIds
                         PlaylistTile(
                             pl,
                             Modifier.weight(1f),
-                            onClick = { onOpenPlaylist(pl) },
+                            onClick = {
+                                if (selectable) {
+                                    selectedPlaylists = if (pl.id in selectedPlaylists) selectedPlaylists - pl.id
+                                    else selectedPlaylists + pl.id
+                                } else onOpenPlaylist(pl)
+                            },
+                            selected = if (selectingPlaylists && pl.id in ownIds) pl.id in selectedPlaylists else null,
                             // Watch later and Liked are YouTube's own: nothing to rename or delete.
-                            onLongClick = if (pl.id == "WL" || pl.id == "LL") null else { { onPlaylistMenu(pl) } },
+                            onLongClick = if (pl.id == "WL" || pl.id == "LL" || selectingPlaylists) null else { { onPlaylistMenu(pl) } },
                         )
                     }
                     if (row.size == 1) Spacer(Modifier.weight(1f))
@@ -253,6 +319,45 @@ fun LibraryScreen(
             }
         }
         }
+    }
+    if (confirmDelete) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!working) confirmDelete = false },
+            title = { Text("Delete ${selectedPlaylists.size} playlist${if (selectedPlaylists.size == 1) "" else "s"}?") },
+            text = { Text("This removes them from your YouTube account and can't be undone.") },
+            confirmButton = {
+                Text(
+                    if (working) "Deleting…" else "Delete",
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.pressable(enabled = !working) {
+                        val ids = selectedPlaylists.toList()
+                        if (ids.isEmpty()) return@pressable
+                        confirmDelete = false
+                        working = true
+                        scope.launch {
+                            var failed = 0
+                            ids.forEach { id -> runCatching { InnerTube.deletePlaylist(id) }.onFailure { failed++ } }
+                            working = false
+                            lib.loadPlaylists()
+                            exitSelection()
+                            onMessage(
+                                if (failed == 0) "Deleted ${ids.size} playlist${if (ids.size == 1) "" else "s"}"
+                                else "Deleted ${ids.size - failed}; $failed failed",
+                            )
+                        }
+                    }.padding(12.dp),
+                )
+            },
+            dismissButton = {
+                Text(
+                    "Cancel",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.pressable(enabled = !working) { confirmDelete = false }.padding(12.dp),
+                )
+            },
+        )
     }
 }
 
@@ -270,67 +375,246 @@ private fun HistoryCard(video: VideoItem, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PlaylistTile(playlist: PlaylistRef, modifier: Modifier, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
+internal fun PlaylistTile(
+    playlist: PlaylistRef,
+    modifier: Modifier,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    selected: Boolean? = null,
+) {
     val c = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(26.dp)
     val (icon, tone) = when (playlist.id) {
-        "WL" -> Icons.Rounded.WatchLater to c.primaryContainer
-        "LL" -> Icons.Rounded.ThumbUp to c.tertiaryContainer
-        else -> Icons.AutoMirrored.Rounded.PlaylistPlay to c.secondaryContainer
+        "WL" -> ImageVector.vectorResource(R.drawable.solar_bookmark) to c.primaryContainer
+        "LL" -> ImageVector.vectorResource(R.drawable.solar_heart) to c.tertiaryContainer
+        else -> ImageVector.vectorResource(R.drawable.solar_playlist) to c.secondaryContainer
     }
-    Column(
+    Box(
         modifier = modifier
-            .height(132.dp)
+            .height(184.dp)
             .pressable(pressedScale = 0.97f, onLongClick = onLongClick, onClick = onClick)
             .clip(shape)
-            .background(c.surfaceContainerLow)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+            .then(if (selected == true) Modifier.border(2.dp, c.primary, shape) else Modifier)
+            .background(c.surfaceContainerLow),
     ) {
-        if (playlist.thumbnail != null) {
-            Thumbnail(playlist.thumbnail, Modifier.size(width = 72.dp, height = 44.dp), radius = 12)
-        } else {
-            Box(Modifier.size(52.dp).clip(CookieShape).background(tone), contentAlignment = Alignment.Center) {
-                Icon(icon, null, tint = contentColorFor(tone))
+        Column(
+            Modifier.fillMaxSize().padding(14.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            if (playlist.thumbnail != null) {
+                Thumbnail(playlist.thumbnail, Modifier.fillMaxWidth().aspectRatio(16f / 9f), radius = 12)
+            } else {
+                Box(Modifier.size(52.dp).clip(CookieShape).background(tone), contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = contentColorFor(tone))
+                }
+            }
+            Column {
+                Text(playlist.title, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                playlist.subtitle?.let { Text(it, color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
             }
         }
-        Column {
-            Text(playlist.title, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            playlist.subtitle?.let { Text(it, color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
+        if (selected != null) {
+            Box(
+                Modifier.align(Alignment.TopEnd).padding(10.dp).size(28.dp)
+                    .clip(CircleShape)
+                    .background(if (selected) c.primary else c.surface.copy(alpha = 0.85f))
+                    .border(1.5.dp, if (selected) c.primary else c.outline, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selected) Icon(ImageVector.vectorResource(R.drawable.solar_check), "Selected", tint = c.onPrimary, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }
 
-/** A playlist's videos (Watch later, Liked, or the user's own). */
+/** A playlist's videos (Watch later, Liked, or the user's own), with bulk selection. */
 @Composable
-fun PlaylistScreen(playlist: PlaylistRef, feed: FeedState, contentPadding: PaddingValues, onBack: () -> Unit, onOpen: (VideoItem) -> Unit) {
+fun PlaylistScreen(
+    playlist: PlaylistRef,
+    feed: FeedState,
+    contentPadding: PaddingValues,
+    onBack: () -> Unit,
+    onOpen: (VideoItem) -> Unit,
+    onMessage: (String) -> Unit = {},
+    onSetStart: () -> Unit = {},
+    libraries: List<PlaylistRef> = emptyList(),
+) {
     LaunchedEffect(playlist.id) { feed.ensureLoaded() }
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+    val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    var selecting by remember(playlist.id) { mutableStateOf(false) }
+    var selected by remember(playlist.id) { mutableStateOf<Set<String>>(emptySet()) }
+    var working by remember(playlist.id) { mutableStateOf(false) }
+    var moveOpen by remember(playlist.id) { mutableStateOf(false) }
+    var downloadOpen by remember(playlist.id) { mutableStateOf(false) }
+    val exclude: (VideoItem) -> Boolean = { LibraryLive.isRemoved(playlist.id, it.id) }
+    val visible = feed.videos.filterNot {
+        exclude(it) || ContentFilter.hideVideo(it) || HiddenVideos.isHidden(it.id)
+    }
+    val visibleIds = visible.mapTo(HashSet()) { it.id }
+    LaunchedEffect(visibleIds) {
+        selected = selected.intersect(visibleIds)
+        if (selecting && visibleIds.isEmpty()) selecting = false
+    }
+    fun exitSelection() {
+        selecting = false
+        selected = emptySet()
+    }
+    suspend fun removeFromSource(video: VideoItem) = runCatching {
+        if (playlist.id == "LL") InnerTube.setLike(video.id, LikeStatus.None)
+        else InnerTube.setInPlaylist(playlist.id, video.id, false)
+    }
+
+    fun removeSelected() {
+        val chosen = visible.filter { it.id in selected }
+        if (chosen.isEmpty() || working) return
+        working = true
+        scope.launch {
+            var failed = 0
+            chosen.forEach { video ->
+                removeFromSource(video)
+                    .onSuccess { LibraryLive.removed(playlist.id, video.id) }
+                    .onFailure { failed++ }
+            }
+            working = false
+            feed.refresh()
+            exitSelection()
+            onMessage(
+                if (failed == 0) "Removed ${chosen.size} video${if (chosen.size == 1) "" else "s"}"
+                else "Removed ${chosen.size - failed}; $failed failed",
+            )
+        }
+    }
+
+    fun moveSelected(target: PlaylistRef) {
+        val chosen = visible.filter { it.id in selected }
+        if (chosen.isEmpty() || working) return
+        working = true
+        scope.launch {
+            var failed = 0
+            chosen.forEach { video ->
+                runCatching { InnerTube.setInPlaylist(target.id, video.id, true) }
+                    .onSuccess {
+                        removeFromSource(video)
+                            .onSuccess { LibraryLive.removed(playlist.id, video.id) }
+                            .onFailure { failed++ }
+                    }
+                    .onFailure { failed++ }
+            }
+            working = false
+            feed.refresh()
+            exitSelection()
+            onMessage(
+                if (failed == 0) "Moved ${chosen.size} to ${target.title}"
+                else "Moved ${chosen.size - failed}; $failed failed",
+            )
+        }
+    }
+
+    fun downloadSelected(height: Int) {
+        val chosen = visible.filter { it.id in selected }
+        if (chosen.isEmpty() || working) return
+        chosen.forEach { DownloadStore.download(it, height) }
+        downloadOpen = false
+        exitSelection()
+        onMessage("Downloading ${chosen.size} video${if (chosen.size == 1) "" else "s"}")
+    }
+
+    Box(Modifier.fillMaxSize().background(c.surface)) {
     CollapsingHeaderLayout(
         resetKey = feed.generation,
         header = {
-        Row(
-            Modifier.fillMaxWidth().statusBarsPadding().padding(start = 12.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CircleAction(Icons.AutoMirrored.Rounded.ArrowBack, "Back", onBack)
-            Spacer(Modifier.width(12.dp))
-            Text(
-                playlist.title,
-                fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, letterSpacing = (-0.8).sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-        }
+            Column {
+                if (selecting) {
+                    Spacer(Modifier.statusBarsPadding().height(4.dp))
+                    BulkSelectionBar(
+                        count = selected.size,
+                        allSelected = visibleIds.isNotEmpty() && selected.size == visibleIds.size,
+                        working = working,
+                        onClose = ::exitSelection,
+                        onAll = { selected = if (selected.size == visibleIds.size) emptySet() else visibleIds },
+                    ) {
+                        BulkAction(
+                            ImageVector.vectorResource(R.drawable.solar_trash),
+                            "Remove",
+                            tint = c.error,
+                            enabled = selected.isNotEmpty() && !working,
+                            onClick = ::removeSelected,
+                        )
+                        BulkAction(
+                            ImageVector.vectorResource(R.drawable.solar_playlist),
+                            "Move",
+                            enabled = selected.isNotEmpty() && !working,
+                        ) { moveOpen = true }
+                        BulkAction(
+                            ImageVector.vectorResource(R.drawable.solar_download),
+                            "Download",
+                            enabled = selected.isNotEmpty() && !working,
+                        ) {
+                            if (DownloadSettings.askEachTime) downloadOpen = true
+                            else downloadSelected(DownloadSettings.qualityHeight)
+                        }
+                    }
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().statusBarsPadding().padding(start = 12.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircleAction(Icons.AutoMirrored.Rounded.ArrowBack, "Back", onBack)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            playlist.title,
+                            modifier = Modifier.weight(1f),
+                            fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, letterSpacing = (-0.8).sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        CircleAction(ImageVector.vectorResource(R.drawable.solar_home), "Set as start screen", onSetStart)
+                        if (visible.isNotEmpty()) {
+                            Spacer(Modifier.width(6.dp))
+                            CircleAction(
+                                ImageVector.vectorResource(R.drawable.solar_check),
+                                "Select videos",
+                            ) { selecting = true }
+                        }
+                    }
+                }
+            }
         },
     ) { top ->
-        if (feed.videos.isEmpty() && !feed.loading && feed.error == null && !feed.hasMore) {
-            Box(Modifier.padding(top = top)) { EmptyState(Icons.Rounded.VideoLibrary, "Nothing here yet", "Videos you add to this playlist will show up here.") }
+        if (visible.isEmpty() && !feed.loading && feed.error == null && !feed.hasMore) {
+            Box(Modifier.padding(top = top)) { EmptyState(ImageVector.vectorResource(R.drawable.solar_playlist), "Nothing here yet", "Videos you add to this playlist will show up here.") }
         } else {
-            FeedList(feed, contentPadding.withTop(top), onOpen, indicatorTop = top)
+            FeedList(
+                feed, contentPadding.withTop(top), onOpen,
+                indicatorTop = top,
+                exclude = exclude,
+                selectionMode = selecting,
+                selectedIds = selected,
+                onToggleSelect = { video ->
+                    selected = if (video.id in selected) selected - video.id else selected + video.id
+                },
+            )
         }
     }
     }
+    if (moveOpen) {
+        MoveVideosSheet(
+            libraries = libraries,
+            sourceId = playlist.id,
+            count = selected.size,
+            onDismiss = { moveOpen = false },
+            onPick = { target -> moveOpen = false; moveSelected(target) },
+        )
+    }
+    if (downloadOpen) {
+        BulkDownloadSheet(
+            count = selected.size,
+            onDismiss = { downloadOpen = false },
+            onPick = ::downloadSelected,
+        )
+    }
 }
+
 
 @Composable
 private fun TextLink(text: String, onClick: () -> Unit) {
@@ -361,9 +645,14 @@ class SearchState(private val scope: CoroutineScope) {
         private set
     private var job: Job? = null
 
+    /** The query bar changed. Emptying it keeps the previous results on screen. */
+    fun onQueryChange(value: String) {
+        query = value
+    }
+
     fun submit() {
         val q = query.trim()
-        if (q.isEmpty()) return
+        if (q.isEmpty()) { clearResults(); return }
         submitted = q
         loading = true
         error = null
@@ -375,6 +664,24 @@ class SearchState(private val scope: CoroutineScope) {
             loading = false
         }
     }
+
+    /**
+     * The Clear button: blank the field, drop the results and show the idle search page.
+     * A search already in flight is cancelled so its late answer cannot reappear.
+     */
+    fun clear() {
+        query = ""
+        clearResults()
+    }
+
+    private fun clearResults() {
+        job?.cancel()
+        submitted = ""
+        results = emptyList()
+        loading = false
+        error = null
+        generation++
+    }
 }
 
 @Composable
@@ -383,6 +690,13 @@ fun SearchScreen(state: SearchState, contentPadding: PaddingValues, onOpen: (Vid
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val view = LocalView.current
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(state.submitted) {
+        if (state.submitted.isBlank()) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+        }
+    }
     // Search and Enter both dismiss the keyboard — every field, every time. A hide issued
     // while the key event is still being dispatched can be undone by the IME, so the
     // window-level hide is posted to run after it.
@@ -410,7 +724,7 @@ fun SearchScreen(state: SearchState, contentPadding: PaddingValues, onOpen: (Vid
                 .padding(start = 20.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.Search, null, tint = c.onSurfaceVariant)
+            Icon(androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_magnifer), null, tint = c.onSurfaceVariant)
             Spacer(Modifier.width(12.dp))
             Box(Modifier.weight(1f)) {
                 if (state.query.isEmpty()) {
@@ -418,14 +732,14 @@ fun SearchScreen(state: SearchState, contentPadding: PaddingValues, onOpen: (Vid
                 }
                 BasicTextField(
                     value = state.query,
-                    onValueChange = { state.query = it },
+                    onValueChange = { state.onQueryChange(it) },
                     singleLine = true,
                     textStyle = TextStyle(color = c.onSurface, fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
                     cursorBrush = SolidColor(c.primary),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submit() }, onDone = { submit() }),
                     // Hardware Enter doesn't go through the IME action; treat it the same.
-                    modifier = Modifier.fillMaxWidth().onPreviewKeyEvent { e ->
+                    modifier = Modifier.fillMaxWidth().focusRequester(focusRequester).onPreviewKeyEvent { e ->
                         if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
                             if (e.type == KeyEventType.KeyDown) submit()
                             true
@@ -435,33 +749,40 @@ fun SearchScreen(state: SearchState, contentPadding: PaddingValues, onOpen: (Vid
             }
             if (state.query.isNotEmpty()) {
                 Box(
-                    modifier = Modifier.size(44.dp).pressable { state.query = "" },
+                    modifier = Modifier.size(44.dp).pressable { state.clear() },
                     contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Rounded.Close, "Clear", tint = c.onSurfaceVariant) }
+                ) { Icon(androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_close), "Clear", tint = c.onSurfaceVariant) }
             }
         }
-        Spacer(Modifier.height(8.dp))
+        // A settled answer from a previous search stays on screen while the next one loads.
+        // Only the thin bar under the field moves; the results never blink away.
+        if (state.loading) {
+            Spacer(Modifier.height(6.dp))
+            LinearProgressIndicator(
+                color = c.primary,
+                trackColor = c.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().height(2.dp),
+            )
+        } else {
+            Spacer(Modifier.height(8.dp))
+        }
         } },
     ) { top ->
         Box(Modifier.fillMaxSize()) {
-        Box(Modifier.padding(top = if (state.results.isNotEmpty() && state.error == null) 0.dp else top)) {
         when {
-            state.loading && state.results.isEmpty() -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), Alignment.Center) {
-                CircularProgressIndicator(color = c.primary, strokeWidth = 4.dp, modifier = Modifier.size(36.dp))
+            // Empty field: the idle page is just the mark, no ads copy, no history.
+            state.submitted.isEmpty() -> SearchIdle(Modifier.padding(top = top))
+            state.results.isEmpty() && state.loading -> LazyColumn(contentPadding = contentPadding.withTop(top)) {
+                items(4) { VideoCardSkeleton() }
             }
-            state.error != null -> EmptyState(
-                icon = Icons.Rounded.CloudOff,
+            state.results.isEmpty() && state.error != null -> EmptyState(
+                icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_offline),
                 title = "Search didn't load",
                 body = state.error.orEmpty(),
                 action = { PillButton("Try again", { state.submit() }) },
             )
-            state.submitted.isEmpty() -> EmptyState(
-                icon = Icons.Rounded.TravelExplore,
-                title = "Search without the ads",
-                body = "Results play straight away, with no ads and no sign-in.",
-            )
             state.results.isEmpty() -> EmptyState(
-                icon = Icons.Rounded.History,
+                icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_history),
                 title = "Nothing found",
                 body = "No videos matched “${state.submitted}”.",
             )
@@ -469,13 +790,25 @@ fun SearchScreen(state: SearchState, contentPadding: PaddingValues, onOpen: (Vid
                 val list = rememberScrollToTop(scrollToTop)
                 LaunchedEffect(state.generation) { list.scrollToItem(0) }
                 LazyColumn(state = list, contentPadding = contentPadding.withTop(top)) {
-                items(state.results, key = { it.id }) { video ->
+                items(state.results.filterNot { ContentFilter.hideVideo(it) || HiddenVideos.isHidden(it.id) }, key = { it.id }) { video ->
                     VideoCard(video, onClick = { onOpen(video) })
                 }
             }
             }
         }
         }
-        }
+    }
+}
+
+/** The untouched Search tab: only the mark, centred, exactly as empty searches should read. */
+@Composable
+private fun SearchIdle(modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Icon(
+            androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_explore),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+            modifier = Modifier.size(104.dp),
+        )
     }
 }

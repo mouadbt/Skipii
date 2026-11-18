@@ -116,8 +116,31 @@ class PlayerState(private val scope: CoroutineScope) {
     private var originalLike = LikeStatus.None
     var inWatchLater by mutableStateOf(false)
         private set
+    /** The account's libraries that currently hold [current], used by the dynamic Library button. */
+    var savedLibraries by mutableStateOf<List<PlaylistRef>>(emptyList())
+        private set
     /** A short message after an account action fails (shown briefly over the player). */
     var actionMessage by mutableStateOf<String?>(null)
+
+    /** Session cache of where a video sits, so long-press options answer without a spinner. */
+    private val membershipCache = mutableMapOf<String, VideoMembership>()
+
+    private fun applyMembership(videoId: String, membership: VideoMembership) {
+        membershipCache[videoId] = membership
+        if (current?.id != videoId) return
+        inWatchLater = membership.inWatchLater
+        savedLibraries = membership.playlists
+    }
+
+    private fun loadMembership(videoId: String) {
+        if (!Account.signedIn) return
+        membershipCache[videoId]?.let { applyMembership(videoId, it); return }
+        scope.launch {
+            runCatching { InnerTube.membership(videoId) }
+                .onSuccess { applyMembership(videoId, it) }
+                .onFailure { Log.w(TAG, "membership for $videoId", it) }
+        }
+    }
 
     private var loadJob: Job? = null
     /** A video picked before the service connection finished; started on connect. */
@@ -149,8 +172,9 @@ class PlayerState(private val scope: CoroutineScope) {
     private fun show(item: VideoItem, startPlayback: Boolean) {
         openedAt = android.os.SystemClock.elapsedRealtime()
         Log.i("SkipiiTime", "open ${item.id}")
-        if (startPlayback) Net.prewarmMediaConnection()
-        current = item
+        val offline = DownloadStore.entry(item.id)
+        if (startPlayback && offline == null) Net.prewarmMediaConnection()
+        current = offline?.video ?: item
         details = null
         error = null
         firstFrameRendered = false
@@ -163,13 +187,20 @@ class PlayerState(private val scope: CoroutineScope) {
         comments.clearFor(item.id)
         accountState = null
         inWatchLater = false
+        savedLibraries = emptyList()
         speedPanelOpen = false
+        // Downloaded videos start from the phone immediately; the online details are a bonus.
+        if (startPlayback && offline != null) {
+            startPlayback(offline.video)
+            loading = false
+        }
         if (Account.signedIn) {
             scope.launch {
                 runCatching { InnerTube.videoState(item.id) }
                     .onSuccess { if (current?.id == item.id) { accountState = it; originalLike = it.like } }
                     .onFailure { Log.w(TAG, "account state for ${item.id}", it) }
             }
+            loadMembership(item.id)
         }
         loadJob?.cancel()
         loadJob = scope.launch {
@@ -183,14 +214,19 @@ class PlayerState(private val scope: CoroutineScope) {
                     // page fetch and only slowed down the critical path.
                     comments.load(item.id)
                     known[item.id] = d.item
-                    if (!d.playable) error = "No playable stream was found for this video."
-                    else if (startPlayback) startPlayback(d.item)
+                    if (offline == null) {
+                        if (!d.playable) error = "No playable stream was found for this video."
+                        else if (startPlayback) startPlayback(d.item)
+                    }
                 }
                 .onFailure {
                     Log.w(TAG, "details failed for ${item.id}", it)
-                    error = YouTube.friendlyError(it)
-                    // Comments wait for details; without this their spinner never stopped.
-                    comments.load(item.id)
+                    // A saved file still plays with no network; only online videos show the error.
+                    if (offline == null) {
+                        error = YouTube.friendlyError(it)
+                        // Comments wait for details; without this their spinner never stopped.
+                        comments.load(item.id)
+                    }
                 }
             loading = false
         }
@@ -334,12 +370,15 @@ class PlayerState(private val scope: CoroutineScope) {
         val item = current ?: return
         accountState = null
         inWatchLater = false
+        savedLibraries = emptyList()
+        membershipCache.clear()
         if (!Account.signedIn) return
         scope.launch {
             runCatching { InnerTube.videoState(item.id) }
                 .onSuccess { if (current?.id == item.id) { accountState = it; originalLike = it.like } }
                 .onFailure { Log.w(TAG, "account state for ${item.id}", it) }
         }
+        loadMembership(item.id)
     }
 
     /** Like count adjusted for the user's own change since the video opened. */
@@ -379,27 +418,40 @@ class PlayerState(private val scope: CoroutineScope) {
     }
 
     fun toggleWatchLater() {
-        val id = current?.id ?: return
-        val add = !inWatchLater
-        inWatchLater = add
+        val item = current ?: return
+        setWatchLater(item, !inWatchLater)
+    }
+
+    /** Long-press options: answer whether this video is already saved, then add or remove it. */
+    suspend fun watchLaterFor(videoId: String): Boolean =
+        membershipCache[videoId]?.inWatchLater
+            ?: runCatching { InnerTube.membership(videoId).also { membershipCache[videoId] = it } }.getOrNull()?.inWatchLater
+            ?: false
+
+    /**
+     * Adds or removes [video] from Watch later. Runs here, not in a sheet: the sheet can close
+     * straight after the tap and a screen-scoped request would be cancelled with it.
+     */
+    fun setWatchLater(video: VideoItem, add: Boolean) {
+        val before = membershipCache[video.id]?.inWatchLater ?: if (current?.id == video.id) inWatchLater else !add
+        if (current?.id == video.id) inWatchLater = add
+        membershipCache[video.id] = membershipCache[video.id]?.copy(inWatchLater = add)
+            ?: VideoMembership(inWatchLater = add, playlists = emptyList())
         scope.launch {
-            runCatching { InnerTube.setInWatchLater(id, add) }
+            runCatching { InnerTube.setInWatchLater(video.id, add) }
                 .onSuccess { actionMessage = if (add) "Saved to Watch later" else "Removed from Watch later" }
-                .onFailure { inWatchLater = !add; actionMessage = "Couldn't update Watch later."; Log.w(TAG, "watch later $id", it) }
+                .onFailure {
+                    if (current?.id == video.id) inWatchLater = before
+                    membershipCache[video.id] = membershipCache[video.id]?.copy(inWatchLater = before)
+                        ?: VideoMembership(inWatchLater = before, playlists = emptyList())
+                    actionMessage = if (add) "Couldn't save to Watch later." else "Couldn't remove from Watch later."
+                    Log.w(TAG, "watch later ${video.id}", it)
+                }
         }
     }
 
-    /** Long-press Save. Runs here, not in the sheet: closing the sheet would cancel its scope mid-request. */
-    fun saveToWatchLater(video: VideoItem) {
-        scope.launch {
-            runCatching { InnerTube.setInWatchLater(video.id, true) }
-                .onSuccess {
-                    if (current?.id == video.id) inWatchLater = true
-                    actionMessage = "Saved to Watch later"
-                }
-                .onFailure { actionMessage = "Couldn't save to Watch later."; Log.w(TAG, "watch later ${video.id}", it) }
-        }
-    }
+    /** Long-press Save (always the add direction); the options sheet asks first when it may be a removal. */
+    fun saveToWatchLater(video: VideoItem) = setWatchLater(video, add = true)
 
     /**
      * "Add to library": puts a video in one of the account's playlists, or takes it out again.
@@ -407,13 +459,29 @@ class PlayerState(private val scope: CoroutineScope) {
      * after, and its scope would cancel the request with it.
      */
     fun saveToLibrary(playlist: PlaylistRef, videoId: String, add: Boolean) {
+        if (playlist.id == "WL") { (current?.takeIf { it.id == videoId })?.let { setWatchLater(it, add) }; return }
+        // Optimistic: the picker stays open for multiple choices, so every tick must answer instantly.
+        if (current?.id == videoId) {
+            savedLibraries = if (add) (savedLibraries + playlist).distinctBy { it.id }
+            else savedLibraries.filterNot { it.id == playlist.id }
+            membershipCache[videoId] = VideoMembership(inWatchLater, savedLibraries)
+        }
+        libraryEdits.getOrPut(videoId) { mutableMapOf() }[playlist.id] = add
+        if (add) LibraryLive.added(playlist.id, videoId) else LibraryLive.removed(playlist.id, videoId)
         scope.launch {
             runCatching { InnerTube.setInPlaylist(playlist.id, videoId, add) }
-                .onSuccess {
-                    libraryEdits.getOrPut(videoId) { mutableMapOf() }[playlist.id] = add
-                    actionMessage = if (add) "Added to ${playlist.title}" else "Removed from ${playlist.title}"
+                .onSuccess { actionMessage = if (add) "Added to ${playlist.title}" else "Removed from ${playlist.title}" }
+                .onFailure {
+                    libraryEdits.getOrPut(videoId) { mutableMapOf() }[playlist.id] = !add
+                    if (current?.id == videoId) {
+                        savedLibraries = if (add) savedLibraries.filterNot { it.id == playlist.id }
+                        else (savedLibraries + playlist).distinctBy { it.id }
+                        membershipCache[videoId] = VideoMembership(inWatchLater, savedLibraries)
+                    }
+                    if (add) LibraryLive.removed(playlist.id, videoId) else LibraryLive.added(playlist.id, videoId)
+                    actionMessage = "Couldn't update ${playlist.title}."
+                    Log.w(TAG, "library ${playlist.id} $videoId", it)
                 }
-                .onFailure { actionMessage = "Couldn't update ${playlist.title}."; Log.w(TAG, "library ${playlist.id} $videoId", it) }
         }
     }
 
@@ -421,8 +489,14 @@ class PlayerState(private val scope: CoroutineScope) {
     fun createLibrary(title: String, privacy: String, videoId: String) {
         scope.launch {
             runCatching { InnerTube.createPlaylist(title, videoId, privacy) }
-                .onSuccess {
-                    libraryEdits.getOrPut(videoId) { mutableMapOf() }[it] = true
+                .onSuccess { id ->
+                    val ref = PlaylistRef(id, title, null, null)
+                    libraryEdits.getOrPut(videoId) { mutableMapOf() }[id] = true
+                    if (current?.id == videoId) {
+                        savedLibraries = (savedLibraries + ref).distinctBy { it.id }
+                        membershipCache[videoId] = VideoMembership(inWatchLater, savedLibraries)
+                    }
+                    LibraryLive.added(id, videoId)
                     actionMessage = "Added to $title"
                 }
                 .onFailure { actionMessage = "Couldn't create $title."; Log.w(TAG, "new library $title", it) }
@@ -466,6 +540,11 @@ class PlayerState(private val scope: CoroutineScope) {
      * info at the same position, keeping play/pause as it was.
      */
     fun setQuality(height: Int?) {
+        // A download has one saved quality; there is no network stream to switch to.
+        DownloadStore.entry(current?.id ?: "")?.let {
+            actionMessage = "This download is saved at ${it.height}p."
+            return
+        }
         QualityPreference.set(height)
         val player = controller ?: return
         val item = details?.item ?: current ?: return
@@ -715,6 +794,6 @@ fun rememberPlayerState(): PlayerState {
     return state
 }
 
-enum class PlayerSheet { Quality, Comments, Queue, Library }
+enum class PlayerSheet { Quality, Comments, Queue, Library, Speed, Download }
 
 private const val TAG = "Skipii"

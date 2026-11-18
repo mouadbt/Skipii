@@ -9,11 +9,14 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.skipii"
+        // Personal fork, installed side by side with Derek's com.skipii build: a different
+        // application ID gives it its own data, account, icon and permissions on the phone.
+        // Flip this back to "com.skipii" only when a build should replace the stock app.
+        applicationId = "com.skipii.onevoidtube"
         minSdk = 26
         targetSdk = 36
-        versionCode = 35
-        versionName = "0.5.26"
+        versionCode = 38
+        versionName = "0.6.3"
     }
 
     buildTypes {

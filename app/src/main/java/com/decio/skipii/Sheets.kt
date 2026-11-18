@@ -1,11 +1,18 @@
 package com.decio.skipii
 
 import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -25,6 +32,10 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VideoLibrary
@@ -38,9 +49,11 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,9 +61,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.sp
 
 // ── Long-press options ─────────────────────────────────────────────────────────
@@ -60,8 +76,16 @@ import androidx.compose.ui.unit.sp
 fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Unit) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     // "Add to library" swaps the options for the picker in place, like the app's other overlays.
     var picking by remember { mutableStateOf(false) }
+    // "Download" swaps the options for the quality list when the user wants to choose.
+    var downloading by remember(video.id) { mutableStateOf(false) }
+    // Whether this video is already saved, so the row offers Remove rather than a duplicate add.
+    var watchLater by remember(video.id) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(video.id) {
+        if (Account.signedIn) watchLater = player.watchLaterFor(video.id)
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -69,6 +93,11 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
     ) {
         if (picking) {
             LibraryPicker(video.id, player, onDone = onDismiss)
+            Spacer(Modifier.height(24.dp))
+            return@ModalBottomSheet
+        }
+        if (downloading) {
+            DownloadQualityList(video, onStarted = onDismiss)
             Spacer(Modifier.height(24.dp))
             return@ModalBottomSheet
         }
@@ -80,17 +109,45 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
                 Text(video.channel, color = c.onSurfaceVariant, fontSize = 13.sp, maxLines = 1)
             }
         }
-        OptionRow(Icons.Rounded.PlaylistPlay, "Play next") { player.playNext(video); onDismiss() }
-        OptionRow(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to queue") { player.addToQueue(video); onDismiss() }
+        OptionRow(ImageVector.vectorResource(R.drawable.solar_playlist), "Play next") { player.playNext(video); onDismiss() }
+        OptionRow(ImageVector.vectorResource(R.drawable.solar_playlist), "Add to queue") { player.addToQueue(video); onDismiss() }
         if (Account.signedIn) {
-            OptionRow(Icons.Rounded.WatchLater, "Save to Watch later") { player.saveToWatchLater(video); onDismiss() }
-            OptionRow(Icons.Rounded.VideoLibrary, "Add to library") { picking = true }
+            val saved = watchLater == true
+            OptionRow(
+                ImageVector.vectorResource(R.drawable.solar_bookmark),
+                when (watchLater) {
+                    null -> "Save to Watch later"
+                    true -> "Remove from Watch later"
+                    false -> "Save to Watch later"
+                },
+            ) { player.setWatchLater(video, !saved); onDismiss() }
+            OptionRow(ImageVector.vectorResource(R.drawable.solar_playlist), "Add to library") { picking = true }
         }
-        OptionRow(Icons.Rounded.Share, "Share") {
+        OptionRow(ImageVector.vectorResource(R.drawable.solar_share), "Share") {
             val send = Intent(Intent.ACTION_SEND).setType("text/plain")
                 .putExtra(Intent.EXTRA_TEXT, "https://youtu.be/${video.id}")
                 .putExtra(Intent.EXTRA_SUBJECT, video.title)
             context.startActivity(Intent.createChooser(send, null))
+            onDismiss()
+        }
+        val download = DownloadStore.entry(video.id)
+        OptionRow(
+            ImageVector.vectorResource(
+                if (download != null) R.drawable.solar_check else R.drawable.solar_download,
+            ),
+            if (download != null) "Downloaded · ${download.height}p" else "Download",
+            tint = if (download != null) c.primary else null,
+        ) {
+            when {
+                download != null -> DownloadStore.remove(video.id)
+                !DownloadSettings.askEachTime -> DownloadStore.download(video, DownloadSettings.qualityHeight)
+                else -> downloading = true
+            }
+            if (download != null || !DownloadSettings.askEachTime) onDismiss()
+        }
+        OptionRow(ImageVector.vectorResource(R.drawable.solar_close), "Not interested") {
+            HiddenVideos.hide(video.id)
+            scope.launch { InnerTube.notInterested(video.feedbackToken) }
             onDismiss()
         }
         Spacer(Modifier.height(24.dp))
@@ -137,7 +194,7 @@ fun QueueCard(player: PlayerState, onOpen: () -> Unit) {
             )
             Text(next.title, color = c.onSecondaryContainer, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, tint = c.onSecondaryContainer)
+        Icon(ImageVector.vectorResource(R.drawable.solar_playlist), null, tint = c.onSecondaryContainer)
     }
 }
 
@@ -167,7 +224,7 @@ fun QueueSheet(player: PlayerState, onDismiss: () -> Unit) {
                     Box(Modifier.padding(horizontal = 20.dp)) {
                         VideoRow(video, onClick = { player.playFromQueue(index); onDismiss() }) {
                             Box(Modifier.size(40.dp).pressable { player.removeFromQueue(index) }, contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.Close, "Remove from queue", tint = c.onSurfaceVariant)
+                                Icon(ImageVector.vectorResource(R.drawable.solar_close), "Remove from queue", tint = c.onSurfaceVariant)
                             }
                         }
                     }
@@ -181,13 +238,17 @@ fun QueueSheet(player: PlayerState, onDismiss: () -> Unit) {
 // ── SponsorBlock settings (inside the account sheet) ───────────────────────────
 
 @Composable
-fun SponsorBlockSettings() {
+fun SponsorBlockSettings(showHeader: Boolean = true) {
     val c = MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("SponsorBlock", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-                Text("Skip sponsor reads and other segments", color = c.onSurfaceVariant, fontSize = 13.sp)
+                if (showHeader) {
+                    Text("SponsorBlock", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                    Text("Skip sponsor reads and other segments", color = c.onSurfaceVariant, fontSize = 13.sp)
+                } else {
+                    Text("Enabled", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
             }
             Switch(
                 checked = SponsorBlock.enabled,
@@ -235,17 +296,175 @@ private fun CategoryRow(category: SponsorBlock.Category) {
     }
 }
 
-// ── Appearance (inside the account sheet) ──────────────────────────────────────
+// ── Player chrome (inside the account sheet) ───────────────────────────────────
 
-/** Light/dark mode plus every Ledgii theme (and wallpaper colors on Android 12+). */
+/**
+ * Which parts of the watch page appear, plus the order of the pill row under the channel bar.
+ * Every control writes through [PlayerUiSettings] so the open player updates on the spot.
+ */
 @Composable
-fun AppearanceSettings() {
+fun PlayerSettings(showHeader: Boolean = true) {
+    val c = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth()) {
+        if (showHeader) {
+            Text("Player", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+            Text("Choose what the watch page shows", color = c.onSurfaceVariant, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
+        }
+        ChromeSwitch("Channel bar", "Avatar, name and Subscribe", !PlayerUiSettings.hideChannelBar) {
+            PlayerUiSettings.updateHideChannelBar(!it)
+        }
+        ChromeSwitch("Comments", "The comments card under the player", !PlayerUiSettings.hideComments) {
+            PlayerUiSettings.updateHideComments(!it)
+        }
+        ChromeSwitch("Related videos", "Videos related to this one", !PlayerUiSettings.hideRelated) {
+            PlayerUiSettings.updateHideRelated(!it)
+        }
+        Spacer(Modifier.height(14.dp))
+        Text("Buttons under the channel bar", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+        Text("Move them up or down and switch off the ones you don't use.", color = c.onSurfaceVariant, fontSize = 12.sp)
+        Spacer(Modifier.height(4.dp))
+        PlayerUiSettings.order.forEachIndexed { index, id ->
+            val action = PlayerUiSettings.Action.entries.firstOrNull { it.id == id } ?: return@forEachIndexed
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(action.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+                val atTop = index == 0
+                val atBottom = index == PlayerUiSettings.order.lastIndex
+                ReorderButton(ImageVector.vectorResource(R.drawable.solar_up), "Move up", enabled = !atTop) {
+                    PlayerUiSettings.move(action, -1)
+                }
+                ReorderButton(ImageVector.vectorResource(R.drawable.solar_down), "Move down", enabled = !atBottom) {
+                    PlayerUiSettings.move(action, 1)
+                }
+                Switch(
+                    checked = PlayerUiSettings.visible(action),
+                    onCheckedChange = { PlayerUiSettings.show(action, it) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = c.primary),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Reset player layout",
+            color = c.primary, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp,
+            modifier = Modifier.pressable { PlayerUiSettings.reset() }.padding(vertical = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun ChromeSwitch(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val c = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(subtitle, color = c.onSurfaceVariant, fontSize = 12.sp)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = c.primary),
+        )
+    }
+}
+
+@Composable
+private fun ReorderButton(
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    Box(
+        Modifier
+            .size(32.dp)
+            .pressable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon, description,
+            tint = if (enabled) c.onSurface else c.onSurfaceVariant.copy(alpha = 0.3f),
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+// ── Settings sections (inside the account sheet) ───────────────────────────────
+
+/**
+ * One titled card in the account sheet. The sheet keeps scrolling as a whole, so the section
+ * itself is not scrollable — it only groups a settings body under a shared heading.
+ */
+@Composable
+fun SettingsSection(
+    title: String,
+    subtitle: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(c.surfaceContainer)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Text(title, fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+        Text(subtitle, color = c.onSurfaceVariant, fontSize = 12.5.sp, lineHeight = 17.sp)
+        Spacer(Modifier.height(10.dp))
+        content()
+    }
+}
+
+/** Nav-bar / mini-player background choice, shared by Appearance and Navigation. */
+@Composable
+fun AppearanceNavOptions() {
+    val c = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth()) {
+        Text("Navigation bar background", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            NavBarSettings.Mode.entries.forEach { mode ->
+                val on = NavBarSettings.mode == mode
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .pressable { NavBarSettings.choose(mode) }
+                        .clip(RoundedCornerShape(if (on) 18.dp else 10.dp))
+                        .background(if (on) c.secondaryContainer else c.surfaceContainerHighest)
+                        .padding(horizontal = 6.dp, vertical = 9.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        mode.label,
+                        color = if (on) c.onSecondaryContainer else c.onSurfaceVariant,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Appearance (inside the account sheet) ──────────────────────────────────────/** Light/dark mode plus every Ledgii theme (and wallpaper colors on Android 12+). */
+@Composable
+fun AppearanceSettings(showHeader: Boolean = true) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
     val dark = isDarkTheme()
     Column(Modifier.fillMaxWidth()) {
-        Text("Appearance", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-        Spacer(Modifier.height(10.dp))
+        if (showHeader) {
+            Text("Appearance", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+            Spacer(Modifier.height(10.dp))
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("system" to "System", "light" to "Light", "dark" to "Dark").forEach { (key, label) ->
                 val on = ThemeSettings.mode == key
@@ -258,6 +477,34 @@ fun AppearanceSettings() {
                 ) { Text(label, color = if (on) c.onSecondaryContainer else c.onSurfaceVariant, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .pressable { ThemeSettings.chooseAmoled(!ThemeSettings.amoled) }
+                .clip(RoundedCornerShape(18.dp))
+                .background(if (ThemeSettings.amoled) c.primaryContainer else c.surfaceContainerHighest)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "AMOLED black",
+                    color = if (ThemeSettings.amoled) c.onPrimaryContainer else c.onSurface,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 14.sp,
+                )
+                Text(
+                    "True black pages and cards in dark mode",
+                    color = if (ThemeSettings.amoled) c.onPrimaryContainer.copy(alpha = 0.75f) else c.onSurfaceVariant,
+                    fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Switch(
+                checked = ThemeSettings.amoled,
+                onCheckedChange = ThemeSettings::chooseAmoled,
+                colors = SwitchDefaults.colors(checkedTrackColor = c.primary),
+            )
+        }
         Spacer(Modifier.height(14.dp))
         val choices = buildList {
             if (ThemeSettings.wallpaperAvailable) add(null to "Wallpaper")
@@ -266,7 +513,7 @@ fun AppearanceSettings() {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             choices.forEach { (hex, name) ->
                 val selected = ThemeSettings.seed?.lowercase() == hex?.lowercase()
-                val scheme = schemeFor(context, hex, dark)
+                val scheme = schemeFor(context, hex, dark, ThemeSettings.amoled)
                 Column(
                     Modifier.width(78.dp).pressable { ThemeSettings.choose(hex) },
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -286,7 +533,7 @@ fun AppearanceSettings() {
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (selected) Icon(Icons.Rounded.Check, "Selected", tint = scheme.onPrimary, modifier = Modifier.size(22.dp))
+                        if (selected) Icon(ImageVector.vectorResource(R.drawable.solar_check), "Selected", tint = scheme.onPrimary, modifier = Modifier.size(22.dp))
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(

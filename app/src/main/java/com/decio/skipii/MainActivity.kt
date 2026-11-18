@@ -37,11 +37,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import kotlin.math.pow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -85,6 +87,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import com.decio.skipii.R
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -120,11 +124,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
-    Home("Home", Icons.Outlined.Home, Icons.Rounded.Home),
-    Subscriptions("Subscriptions", Icons.Outlined.Subscriptions, Icons.Rounded.Subscriptions),
-    Search("Search", Icons.Rounded.Search, Icons.Rounded.Search),
-    Library("Library", Icons.Outlined.VideoLibrary, Icons.Rounded.VideoLibrary),
+enum class Tab(val label: String, @androidx.annotation.DrawableRes val iconRes: Int) {
+    Home("Home", R.drawable.solar_home),
+    Subscriptions("Subscriptions", R.drawable.solar_clapperboardplay),
+    Search("Search", R.drawable.solar_magnifer),
+    Library("Library", R.drawable.solar_videolibrary),
 }
 
 // Castii's floating stack: a 56 dp nav pill capped at 328 dp, the mini-player 8 dp above
@@ -132,25 +136,35 @@ enum class Tab(val label: String, val icon: ImageVector, val selectedIcon: Image
 // 62 dp (Derek, 2026-10-05): between Castii's 56 and Ledgii's 78. Tabs keep 50 dp targets.
 private val NavHeight = 62.dp
 private val NavWidth = 328.dp
-private val MiniWidth = 368.dp
-private val MiniGap = 8.dp
+// The mini-player is the same width as the nav pill and sits flush on top of it: one merged
+// floating dock. Its 31 dp radius matches the nav pill's rounded ends.
+private val MiniWidth = NavWidth
+private val MiniGap = 0.dp
 private const val SELECTED_TAB_WEIGHT = 2.2f
 
 @Composable
 fun SkipiiApp() {
     val c = MaterialTheme.colorScheme
+    val navColor = NavBarSettings.color(c.surfaceContainerHighest, c.primary, c.background)
     val player = rememberPlayerState()
     val scope = rememberCoroutineScope()
     val search = remember { SearchState(scope) }
     val lib = remember { LibraryData(scope) }
     var signingIn by remember { mutableStateOf(false) }
     var accountSheet by remember { mutableStateOf(false) }
-    var openPlaylist by remember { mutableStateOf<PlaylistRef?>(null) }
-    var openChannel by remember { mutableStateOf<String?>(null) }
+    // The user's chosen launch point can be a tab, a channel or a playlist.
+    val startupChannel = remember { NavigationSettings.startupChannelUrl() }
+    val startupPlaylist = remember { NavigationSettings.startupPlaylist() }
+    var openPlaylist by remember { mutableStateOf(startupPlaylist) }
+    var openChannels by remember { mutableStateOf(false) }
+    var openChannel by remember { mutableStateOf(startupChannel) }
     // Kept after closing so the page can slide out with its content.
-    var channelState by remember { mutableStateOf<ChannelState?>(null) }
+    var channelState by remember { mutableStateOf(startupChannel?.let { ChannelState(it, scope) }) }
     val playlistFeed = remember(openPlaylist?.id) { openPlaylist?.let { lib.playlistFeed(it.id) } }
-    var tab by rememberSaveable { mutableStateOf(Tab.Home) }
+    var tab by rememberSaveable { mutableStateOf(NavigationSettings.startupTab()) }
+    val visibleTabs = Tab.entries.filterNot { it in NavigationSettings.hiddenTabs }.ifEmpty { listOf(Tab.Home) }
+    val fallbackTab = visibleTabs.firstOrNull() ?: Tab.Home
+    LaunchedEffect(visibleTabs, tab) { if (tab !in visibleTabs) tab = fallbackTab }
     // Bumped when the already-selected tab is tapped; that tab's list scrolls to the top.
     val scrollToTop = remember { mutableStateMapOf<Tab, Int>() }
     val reduced = rememberReducedMotion()
@@ -228,9 +242,10 @@ fun SkipiiApp() {
     LaunchedEffect(hasMini) { if (!hasMini) gestures.resetBrightness() }
 
     BackHandler(enabled = player.expanded) { player.expanded = false }
-    BackHandler(enabled = !player.expanded && tab != Tab.Home && openPlaylist == null) { tab = Tab.Home }
+    BackHandler(enabled = !player.expanded && tab != fallbackTab && openPlaylist == null && !openChannels) { tab = fallbackTab }
     BackHandler(enabled = !player.expanded && openPlaylist != null) { openPlaylist = null }
     BackHandler(enabled = signingIn) { signingIn = false }
+    BackHandler(enabled = !player.expanded && openChannels && openChannel == null) { openChannels = false }
     BackHandler(enabled = !player.expanded && openChannel != null) { openChannel = null }
     // Registered next-to-last: in upright fullscreen Back returns to the watch page…
     BackHandler(enabled = uprightFullscreen) { exitFullscreen() }
@@ -318,6 +333,7 @@ fun SkipiiApp() {
                     lib, contentPadding, onOpen = player::open,
                     onSignIn = { signingIn = true }, onAccount = { accountSheet = true },
                     scrollToTop = scrollToTop[Tab.Subscriptions] ?: 0,
+                    onOpenChannels = { openChannels = true },
                 )
                 Tab.Search -> SearchScreen(search, contentPadding, onOpen = player::open, scrollToTop = scrollToTop[Tab.Search] ?: 0)
                 Tab.Library -> LibraryScreen(
@@ -325,6 +341,7 @@ fun SkipiiApp() {
                     onPlaylistMenu = { playlistOptions = it },
                     onSignIn = { signingIn = true }, onAccount = { accountSheet = true },
                     scrollToTop = scrollToTop[Tab.Library] ?: 0,
+                    onMessage = { player.actionMessage = it },
                 )
             }
         }
@@ -338,8 +355,36 @@ fun SkipiiApp() {
             val pl = openPlaylist
             val feed = playlistFeed
             if (pl != null && feed != null) {
-                PlaylistScreen(pl, feed, contentPadding, onBack = { openPlaylist = null }, onOpen = player::open)
+                PlaylistScreen(
+                    pl, feed, contentPadding,
+                    onBack = { openPlaylist = null },
+                    onOpen = player::open,
+                    onMessage = { player.actionMessage = it },
+                    onSetStart = {
+                        NavigationSettings.setPlaylist(pl)
+                        player.actionMessage = "Start screen set to ${pl.title}"
+                    },
+                    libraries = lib.playlists,
+                )
             }
+        }
+
+        // The full subscriptions list behind the channel rail's See all.
+        AnimatedVisibility(
+            visible = openChannels,
+            enter = if (reduced) fadeIn(snap()) else slideInHorizontally(tween(340, easing = Motion.Emphasized)) { it } + fadeIn(tween(120)),
+            exit = if (reduced) fadeOut(snap()) else slideOutHorizontally(tween(300, easing = Motion.Emphasized)) { it } + fadeOut(tween(220)),
+        ) {
+            ChannelsScreen(
+                lib, contentPadding,
+                onBack = { openChannels = false },
+                onOpenChannel = { ch ->
+                    val url = "https://www.youtube.com/channel/${ch.id}"
+                    if (channelState?.url != url) channelState = ChannelState(url, scope)
+                    openChannel = url
+                },
+                onMessage = { player.actionMessage = it },
+            )
         }
 
         // A channel opens the same way, over everything below the mini-player.
@@ -349,7 +394,18 @@ fun SkipiiApp() {
             exit = if (reduced) fadeOut(snap()) else slideOutHorizontally(tween(300, easing = Motion.Emphasized)) { it } + fadeOut(tween(220)),
         ) {
             channelState?.let { ch ->
-                ChannelScreen(ch, contentPadding, onBack = { openChannel = null }, onOpen = player::open, onMessage = { player.actionMessage = it })
+                ChannelScreen(
+                    ch,
+                    contentPadding,
+                    onBack = { openChannel = null },
+                    onOpen = player::open,
+                    onOpenPlaylist = { openPlaylist = it },
+                    onMessage = { player.actionMessage = it },
+                    onSetStart = {
+                        NavigationSettings.setChannel(ch.url, ch.details?.name)
+                        player.actionMessage = "Start screen set to ${ch.details?.name ?: "this channel"}"
+                    },
+                )
             }
         }
 
@@ -416,15 +472,58 @@ fun SkipiiApp() {
             )
         }
 
+        val p = morph.progress.value
+        val g = morph.geometry
+        // During initial lift-off (p in 0..0.18), the dock separates smoothly with a water-drop meniscus
+        val mergedFraction = if (hasMini && !showFullscreen) (1f - ramp(p, 0f, 0.18f)) else 0f
+
+        // Liquid water-drop bridge connecting the rising mini-card and the nav dock
+        if (hasMini && !showFullscreen && p in 0.001f..0.18f && g != null) {
+            val t = (p / 0.18f).coerceIn(0f, 1f)
+            Canvas(Modifier.fillMaxSize()) {
+                val full = Rect(Offset.Zero, size)
+                val cardBottom = lerpF(g.miniCard.bottom, full.bottom, ramp(p, 0.3f))
+                val navTop = g.miniCard.bottom
+                val gap = navTop - cardBottom
+                if (gap > 0f) {
+                    val w = g.miniCard.width
+                    val centerX = (g.miniCard.left + g.miniCard.right) / 2f
+                    val topW = w * (1f - t * 0.35f)
+                    val botW = w * (1f - t * 0.35f)
+                    val waistW = w * (1f - t).pow(1.8f)
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(centerX - topW / 2f, cardBottom)
+                        cubicTo(
+                            centerX - waistW / 2f, cardBottom + gap * 0.35f,
+                            centerX - waistW / 2f, navTop - gap * 0.35f,
+                            centerX - botW / 2f, navTop,
+                        )
+                        lineTo(centerX + botW / 2f, navTop)
+                        cubicTo(
+                            centerX + waistW / 2f, navTop - gap * 0.35f,
+                            centerX + waistW / 2f, cardBottom + gap * 0.35f,
+                            centerX + topW / 2f, cardBottom,
+                        )
+                        close()
+                    }
+                    drawPath(path, color = navColor)
+                }
+            }
+        }
+
         NavPill(
             selected = tab,
+            tabs = visibleTabs,
+            color = navColor,
+            mergedFraction = mergedFraction,
             onSelect = { selected ->
                 when {
                     // Re-tapping the current tab: back out of a playlist, else scroll to top.
                     selected == tab && openChannel != null -> openChannel = null
                     selected == tab && openPlaylist != null -> openPlaylist = null
+                    selected == tab && openChannels -> openChannels = false
                     selected == tab -> scrollToTop[selected] = (scrollToTop[selected] ?: 0) + 1
-                    else -> { openPlaylist = null; openChannel = null; tab = selected }
+                    else -> { openPlaylist = null; openChannel = null; openChannels = false; tab = selected }
                 }
             },
             modifier = Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = stackBottom),
@@ -461,6 +560,8 @@ fun SkipiiApp() {
             PlayerSheet.Comments -> Unit // a panel inside the player (PlayerScreen)
             PlayerSheet.Queue -> QueueSheet(player, onDismiss = { player.sheet = null })
             PlayerSheet.Library -> LibrarySheet(player, onDismiss = { player.sheet = null })
+            PlayerSheet.Speed -> SpeedSheet(player, onDismiss = { player.sheet = null })
+            PlayerSheet.Download -> DownloadSheet(player, onDismiss = { player.sheet = null })
             null -> Unit
         }
         optionsFor?.let { video -> VideoOptionsSheet(video, player, onDismiss = { optionsFor = null }) }
@@ -505,11 +606,17 @@ private fun QueueMessage(player: PlayerState, modifier: Modifier) {
  * others show their icon only. No ripple, no outline.
  */
 @Composable
-private fun NavPill(selected: Tab, onSelect: (Tab) -> Unit, modifier: Modifier = Modifier) {
+private fun NavPill(selected: Tab, tabs: List<Tab>, color: Color, mergedFraction: Float, onSelect: (Tab) -> Unit, modifier: Modifier = Modifier) {
     val c = MaterialTheme.colorScheme
     val view = LocalView.current
     val reduced = rememberReducedMotion()
-    val shape = RoundedCornerShape(50)
+    val topRadius = with(LocalDensity.current) { lerpF((NavHeight / 2).toPx(), 0f, mergedFraction.coerceIn(0f, 1f)).toDp() }
+    val shape = RoundedCornerShape(
+        topStart = topRadius,
+        topEnd = topRadius,
+        bottomStart = NavHeight / 2,
+        bottomEnd = NavHeight / 2,
+    )
     Surface(
         modifier = modifier
             .widthIn(max = NavWidth)
@@ -517,12 +624,12 @@ private fun NavPill(selected: Tab, onSelect: (Tab) -> Unit, modifier: Modifier =
             .fillMaxWidth()
             .shadow(20.dp, shape, clip = false, ambientColor = Color.Black.copy(alpha = 0.10f), spotColor = Color.Black.copy(alpha = 0.12f)),
         shape = shape,
-        color = c.surfaceVariant,
-        tonalElevation = 10.dp,
+        color = color,
+        tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
         Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Tab.entries.forEach { t ->
+            tabs.forEach { t ->
                 val active = t == selected
                 val spec = if (reduced) snap<Float>() else tween(260, easing = Motion.Emphasized)
                 val labelColor by animateColorAsState(
@@ -550,7 +657,7 @@ private fun NavPill(selected: Tab, onSelect: (Tab) -> Unit, modifier: Modifier =
                     contentColor = labelColor,
                 ) {
                     Row(Modifier.height(50.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (active) t.selectedIcon else t.icon, contentDescription = t.label, modifier = Modifier.size(22.dp))
+                        Icon(painterResource(t.iconRes), contentDescription = t.label, modifier = Modifier.size(22.dp))
                         AnimatedVisibility(
                             visible = active,
                             enter = if (reduced) fadeIn(snap()) else fadeIn(tween(160, easing = Motion.Emphasized)) + expandHorizontally(tween(200, easing = Motion.Emphasized)),
