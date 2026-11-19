@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,14 +19,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,9 +50,45 @@ fun DownloadsScreen(
 ) {
     val c = MaterialTheme.colorScheme
     val entries = DownloadStore.entries
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // Ids waiting for the confirmation dialog, so a tap never deletes files immediately.
+    var pendingRemoval by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val ids = entries.mapTo(HashSet()) { it.video.id }
+    LaunchedEffect(entries) {
+        selected = selected.intersect(ids)
+        if (entries.isEmpty()) selecting = false
+    }
+    fun exitSelection() {
+        selecting = false
+        selected = emptySet()
+    }
     Box(Modifier.fillMaxSize().background(c.surface)) {
         Column(Modifier.fillMaxSize()) {
-            LibraryPageHeader("Downloads", onBack)
+            LibraryPageHeader(
+                "Downloads", onBack,
+                actions = {
+                    if (entries.isNotEmpty() && !selecting) {
+                        CircleAction(Icons.Rounded.Check, "Select downloads") { selecting = true }
+                    }
+                },
+            )
+            if (selecting) {
+                BulkSelectionBar(
+                    count = selected.size,
+                    allSelected = ids.isNotEmpty() && selected.size == ids.size,
+                    working = false,
+                    onClose = ::exitSelection,
+                    onAll = { selected = if (selected.size == ids.size) emptySet() else ids },
+                ) {
+                    BulkAction(
+                        Icons.Rounded.Delete,
+                        "Remove",
+                        tint = c.error,
+                        enabled = selected.isNotEmpty(),
+                    ) { pendingRemoval = selected }
+                }
+            }
             if (entries.isEmpty()) {
                 EmptyState(
                     icon = Icons.Rounded.Download,
@@ -56,18 +100,54 @@ fun DownloadsScreen(
                     contentPadding = PaddingValues(top = 4.dp, bottom = contentPadding.calculateBottomPadding()),
                 ) {
                     items(entries, key = { it.video.id }) { entry ->
+                        val id = entry.video.id
                         Box(Modifier.padding(horizontal = 16.dp)) {
                             VideoRow(
                                 entry.video,
-                                onClick = { onOpen(entry.video) },
-                                trailing = {
-                                    RemoveDownloadButton(entry.video.id)
+                                onClick = {
+                                    if (selecting) {
+                                        selected = if (id in selected) selected - id else selected + id
+                                    } else {
+                                        onOpen(entry.video)
+                                    }
                                 },
+                                trailing = {
+                                    if (!selecting) RemoveDownloadButton { pendingRemoval = setOf(id) }
+                                },
+                                selected = if (selecting) id in selected else null,
                             )
                         }
                     }
                 }
             }
+        }
+        if (pendingRemoval.isNotEmpty()) {
+            val count = pendingRemoval.size
+            AlertDialog(
+                onDismissRequest = { pendingRemoval = emptySet() },
+                title = { Text(if (count == 1) "Remove download?" else "Remove $count downloads?") },
+                text = { Text("This deletes the saved file from Skipii. You can download it again when online.") },
+                confirmButton = {
+                    Text(
+                        "Remove",
+                        color = c.error,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.pressable {
+                            pendingRemoval.forEach { DownloadStore.remove(it) }
+                            pendingRemoval = emptySet()
+                            if (selecting) exitSelection()
+                        }.padding(12.dp),
+                    )
+                },
+                dismissButton = {
+                    Text(
+                        "Cancel",
+                        color = c.onSurfaceVariant,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.pressable { pendingRemoval = emptySet() }.padding(12.dp),
+                    )
+                },
+            )
         }
     }
 }
@@ -95,7 +175,11 @@ fun HistoryScreen(
 }
 
 @Composable
-private fun LibraryPageHeader(title: String, onBack: () -> Unit) {
+private fun LibraryPageHeader(
+    title: String,
+    onBack: () -> Unit,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -114,17 +198,18 @@ private fun LibraryPageHeader(title: String, onBack: () -> Unit) {
             letterSpacing = (-0.8).sp,
             maxLines = 1,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { actions() }
     }
 }
 
 @Composable
-private fun RemoveDownloadButton(videoId: String) {
+private fun RemoveDownloadButton(onClick: () -> Unit) {
     val c = MaterialTheme.colorScheme
     Box(
         Modifier
             .padding(start = 8.dp)
             .size(34.dp)
-            .pressable { DownloadStore.remove(videoId) }
+            .pressable(onClick = onClick)
             .clip(CircleShape)
             .background(c.surfaceContainerHigh),
         contentAlignment = Alignment.Center,

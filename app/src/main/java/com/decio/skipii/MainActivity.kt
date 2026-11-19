@@ -567,15 +567,21 @@ fun SkipiiApp() {
         )
 
         // The player morphs out of (and back into) the mini-player; see PlayerMorph.
-        if (showFullscreen) {
-            FullscreenPlayer(player, gestures, onExit = { exitFullscreen() })
-        } else if (showPlayer) {
-            PlayerScreen(
-                player, morph, gestures,
-                onOpen = player::open,
-                onCollapse = { player.expanded = false },
-                onFullscreen = { toggleFullscreen() },
-            )
+        // Above the Downloads/History/Playlist pages: opening a video from one of them must
+        // show the full player, not play behind the page in the mini-player.
+        if (showFullscreen || showPlayer) {
+            Box(Modifier.fillMaxSize().zIndex(4f)) {
+                if (showFullscreen) {
+                    FullscreenPlayer(player, gestures, onExit = { exitFullscreen() })
+                } else {
+                    PlayerScreen(
+                        player, morph, gestures,
+                        onOpen = player::open,
+                        onCollapse = { player.expanded = false },
+                        onFullscreen = { toggleFullscreen() },
+                    )
+                }
+            }
         }
 
         if (accountSheet) {

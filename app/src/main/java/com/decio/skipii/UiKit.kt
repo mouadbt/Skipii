@@ -321,7 +321,7 @@ fun VideoCard(
 
 /** Compact row used for "More videos" under the player. */
 @Composable
-fun VideoRow(video: VideoItem, onClick: () -> Unit, trailing: (@Composable () -> Unit)? = null) {
+fun VideoRow(video: VideoItem, onClick: () -> Unit, selected: Boolean? = null, trailing: (@Composable () -> Unit)? = null) {
     val c = MaterialTheme.colorScheme
     val menu = LocalVideoMenu.current
     Row(
@@ -332,6 +332,16 @@ fun VideoRow(video: VideoItem, onClick: () -> Unit, trailing: (@Composable () ->
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selected != null) {
+            Box(
+                Modifier.size(26.dp).clip(CircleShape)
+                    .background(if (selected) c.primary else c.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selected) Icon(Icons.Rounded.Check, "Selected", tint = c.onPrimary, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+        }
         Box(Modifier.width(140.dp)) {
             Thumbnail(video.thumbnail, Modifier.fillMaxWidth().aspectRatio(16f / 9f), radius = 16)
             DurationPill(video.durationSec, Modifier.align(Alignment.BottomEnd).padding(6.dp), small = true)
