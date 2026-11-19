@@ -70,7 +70,6 @@ enum class ChannelSort(val label: String) {
     Newest("Newest"),
     Popular("Popular"),
     Oldest("Oldest"),
-    LeastViews("Least views"),
 }
 
 @Stable
@@ -204,7 +203,6 @@ class ChannelState(val url: String, private val scope: CoroutineScope) {
             ChannelSort.Newest -> sortTokens.entries.firstOrNull { it.key.contains("latest", true) || it.key.contains("newest", true) }?.value
             ChannelSort.Popular -> sortTokens.entries.firstOrNull { it.key.contains("popular", true) }?.value
             ChannelSort.Oldest -> sortTokens.entries.firstOrNull { it.key.contains("oldest", true) }?.value
-            ChannelSort.LeastViews -> sortTokens.entries.firstOrNull { it.key.contains("least", true) || it.key.contains("view", true) }?.value
         }
         loadVideosFor(d, token)
     }
@@ -281,6 +279,15 @@ fun ChannelScreen(
     val c = MaterialTheme.colorScheme
     val list = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
+    // Only offer sections that actually have something: no empty Live/Playlists chips.
+    val visibleTabs = buildList {
+        add(ChannelTab.Videos)
+        if (state.liveVideos.isNotEmpty()) add(ChannelTab.Live)
+        if (state.playlists.isNotEmpty()) add(ChannelTab.Playlists)
+    }
+    LaunchedEffect(visibleTabs) {
+        if (state.tab !in visibleTabs) state.selectTab(ChannelTab.Videos)
+    }
     var descriptionOpen by remember(state.url) { mutableStateOf(false) }
     val nearEnd by remember {
         derivedStateOf { (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= list.layoutInfo.totalItemsCount - 4 }
@@ -363,11 +370,6 @@ fun ChannelScreen(
                     }
                 }
                 item(key = "tabs") {
-                    val visibleTabs = buildList {
-                        add(ChannelTab.Videos)
-                        if (!(state.liveLoaded && state.liveVideos.isEmpty())) add(ChannelTab.Live)
-                        if (!(state.playlistsLoaded && state.playlists.isEmpty())) add(ChannelTab.Playlists)
-                    }
                     Row(
                         Modifier
                             .fillMaxWidth()

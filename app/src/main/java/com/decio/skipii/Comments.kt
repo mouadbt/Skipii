@@ -35,6 +35,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
@@ -100,7 +104,11 @@ import kotlinx.coroutines.launch
 
 /** Comments for the open video: first page, paging, per-comment replies, likes and posting. */
 @Stable
-class CommentsState(private val scope: CoroutineScope) {
+class CommentsState(
+    private val scope: CoroutineScope,
+    /** Confirmation for the player's small popup ("Comment posted"). */
+    private val onMessage: (String) -> Unit = {},
+) {
     private var videoId: String? = null
     var comments by mutableStateOf<List<Comment>>(emptyList())
         private set
@@ -140,6 +148,7 @@ class CommentsState(private val scope: CoroutineScope) {
         videoId = id
         comments = emptyList(); total = -1; disabled = false; error = null; next = null
         replies.clear(); repliesLoading.clear(); replyingTo = null; draft = ""; postError = null
+        managing = null; editing = null; editDraft = ""; editError = null
         loading = true
     }
 
@@ -156,6 +165,10 @@ class CommentsState(private val scope: CoroutineScope) {
         replies.clear()
         repliesLoading.clear()
         liked.clear()
+        managing = null
+        editing = null
+        editDraft = ""
+        editError = null
         loading = true
         job?.cancel()
         job = scope.launch {
@@ -223,6 +236,94 @@ class CommentsState(private val scope: CoroutineScope) {
         private set
     var postError by mutableStateOf<String?>(null)
 
+    // ── The account's own comments ──
+    /** Comment whose owner menu is open. */
+    var managing by mutableStateOf<Comment?>(null)
+    /** Comment being edited in its sheet. */
+    var editing by mutableStateOf<Comment?>(null)
+        private set
+    var editDraft by mutableStateOf("")
+    var editError by mutableStateOf<String?>(null)
+        private set
+    var savingEdit by mutableStateOf(false)
+        private set
+
+    fun startEdit(comment: Comment) {
+        managing = null
+        editing = comment
+        editDraft = comment.text
+        editError = null
+    }
+
+    fun cancelEdit() {
+        if (savingEdit) return
+        editing = null
+        editError = null
+    }
+
+    fun saveEdit(onDone: (Boolean) -> Unit = {}) {
+        val id = videoId ?: return
+        val target = editing ?: return
+        val text = editDraft.trim()
+        if (text.isEmpty() || savingEdit) return
+        savingEdit = true
+        editError = null
+        scope.launch {
+            runCatching { CommentPosting.update(id, target, text) }
+                .onSuccess {
+                    replaceText(target, text)
+                    editing = null
+                    onMessage("Comment edited")
+                    onDone(true)
+                }
+                .onFailure {
+                    editError = it.message ?: "Couldn't save that edit."
+                    onDone(false)
+                }
+            savingEdit = false
+        }
+    }
+
+    fun delete(comment: Comment, onDone: (Boolean) -> Unit = {}) {
+        val id = videoId ?: return
+        scope.launch {
+            runCatching { CommentPosting.delete(id, comment) }
+                .onSuccess {
+                    removeComment(comment)
+                    managing = null
+                    onMessage("Comment deleted")
+                    onDone(true)
+                }
+                .onFailure {
+                    onMessage(it.message ?: "Couldn't delete that comment.")
+                    onDone(false)
+                }
+        }
+    }
+
+    private fun replaceText(comment: Comment, text: String) {
+        val updated = comment.copy(text = text)
+        if (comment.id.contains('.')) {
+            val thread = comment.id.substringBefore('.')
+            replies[thread] = replies[thread].orEmpty().map { if (it.id == comment.id) updated else it }
+        } else {
+            comments = comments.map { if (it.id == comment.id) updated else it }
+        }
+    }
+
+    private fun removeComment(comment: Comment) {
+        if (comment.id.contains('.')) {
+            val thread = comment.id.substringBefore('.')
+            replies[thread] = replies[thread].orEmpty().filterNot { it.id == comment.id }
+            comments = comments.map {
+                if (it.id == thread) it.copy(replyCount = (it.replyCount - 1).coerceAtLeast(0)) else it
+            }
+        } else {
+            comments = comments.filterNot { it.id == comment.id }
+            if (total > 0) total -= 1
+        }
+    }
+
     fun startReply(comment: Comment) {
         replyingTo = comment
         // Replies to a reply go to the same thread, addressed with an @mention (as on YouTube).
@@ -240,9 +341,10 @@ class CommentsState(private val scope: CoroutineScope) {
         scope.launch {
             runCatching {
                 if (threadId == null) CommentPosting.comment(id, text) else CommentPosting.reply(id, threadId, text)
-            }.onSuccess {
+            }.onSuccess { response ->
                 val profile = Account.profile
-                val mine = Comment(
+                val posted = CommentFeed.created(response)?.takeIf { it.text.trim() == text }
+                val mine = posted ?: Comment(
                     id = "local-${System.nanoTime()}",
                     author = profile?.handle ?: profile?.name ?: "You",
                     channelId = null,
@@ -259,6 +361,7 @@ class CommentsState(private val scope: CoroutineScope) {
                 }
                 draft = ""
                 replyingTo = null
+                onMessage(if (threadId == null) "Comment posted" else "Reply posted")
             }.onFailure { postError = it.message ?: "Couldn't post your comment." }
             posting = false
         }
@@ -456,6 +559,8 @@ fun CommentsPanel(state: CommentsState, partialTop: Dp, onClose: () -> Unit) {
             // Clear of the gesture bar when the keyboard isn't up.
             Spacer(Modifier.fillMaxWidth().background(if (Account.signedIn) c.surfaceContainer else c.surfaceContainer).windowInsetsBottomHeight(WindowInsets.navigationBars))
         }
+        state.managing?.let { CommentActionsSheet(it, state) }
+        state.editing?.let { CommentEditSheet(it, state) }
     }
 }
 
@@ -536,6 +641,14 @@ private fun CommentRow(comment: Comment, state: CommentsState, isReply: Boolean 
                 if (comment.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = c.onSurfaceVariant, modifier = Modifier.size(14.dp))
                 Text(comment.displayName(), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 comment.ago?.let { Text(it, color = c.onSurfaceVariant, fontSize = 12.sp, maxLines = 1) }
+                if (comment.manage != null) {
+                    Box(
+                        Modifier.size(28.dp).pressable { state.managing = comment },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Rounded.MoreVert, "Comment options", tint = c.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
+                }
             }
             Spacer(Modifier.height(3.dp))
             Text(comment.text, fontSize = 14.sp, lineHeight = 20.sp)
@@ -600,6 +713,157 @@ private fun CommentRow(comment: Comment, state: CommentsState, isReply: Boolean 
         }
     }
     if (!isReply) {
-        state.replies[comment.id]?.forEach { reply -> CommentRow(reply, state, isReply = true) }
+        if (state.repliesLoading[comment.id] == true) {
+            repeat(3) { ReplySkeleton() }
+        } else {
+            state.replies[comment.id]?.forEach { reply -> CommentRow(reply, state, isReply = true) }
+        }
+    }
+}
+
+/** The owner's menu: Edit and/or Delete, exactly as YouTube offered them for this comment. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommentActionsSheet(comment: Comment, state: CommentsState) {
+    val c = MaterialTheme.colorScheme
+    var confirming by remember(comment.id) { mutableStateOf(false) }
+    var deleting by remember(comment.id) { mutableStateOf(false) }
+    var deleteError by remember(comment.id) { mutableStateOf<String?>(null) }
+    val manage = comment.manage ?: return
+    ModalBottomSheet(
+        onDismissRequest = { if (!deleting) state.managing = null },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surfaceContainerLow,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            if (confirming) {
+                Text("Delete comment?", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "This can't be undone.",
+                    color = c.onSurfaceVariant, fontSize = 14.sp, lineHeight = 20.sp,
+                )
+                deleteError?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = c.error, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        Modifier.weight(1f).height(48.dp).pressable(enabled = !deleting) { state.managing = null }
+                            .clip(RoundedCornerShape(22.dp)).background(c.surfaceContainerHighest),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("Keep it", color = c.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+                    Box(
+                        Modifier.weight(1f).height(48.dp).pressable(enabled = !deleting) {
+                            deleting = true
+                            deleteError = null
+                            state.delete(comment) { ok ->
+                                deleting = false
+                                if (!ok) deleteError = "Couldn't delete that comment."
+                            }
+                        }.clip(RoundedCornerShape(22.dp)).background(c.error),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(if (deleting) "Deleting…" else "Delete", color = c.onError, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+                    }
+                }
+            } else {
+                Text("Your comment", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    comment.text,
+                    color = c.onSurfaceVariant, fontSize = 14.sp, lineHeight = 20.sp,
+                    maxLines = 3, overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(12.dp))
+                if (manage.editParams != null || manage.editReplyParams != null) {
+                    CommentManageRow(Icons.Rounded.Edit, "Edit") { state.startEdit(comment) }
+                }
+                if (manage.deleteAction != null) {
+                    CommentManageRow(Icons.Rounded.DeleteOutline, "Delete", tint = c.error) { confirming = true }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun CommentManageRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).pressable { onClick() }.padding(horizontal = 12.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(21.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(label, color = tint, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+    }
+}
+
+/** Edit sheet: same text as the posted comment, saved with YouTube's own update endpoint. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommentEditSheet(comment: Comment, state: CommentsState) {
+    val c = MaterialTheme.colorScheme
+    val requester = remember { FocusRequester() }
+    val canSave = state.editDraft.isNotBlank() && !state.savingEdit && state.editDraft.trim() != comment.text.trim()
+    LaunchedEffect(comment.id) { runCatching { requester.requestFocus() } }
+    ModalBottomSheet(
+        onDismissRequest = { state.cancelEdit() },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surfaceContainerLow,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            Text("Edit comment", fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp)
+            Spacer(Modifier.height(12.dp))
+            Box(
+                Modifier.fillMaxWidth().heightIn(min = 96.dp).clip(RoundedCornerShape(18.dp))
+                    .background(c.surfaceContainerHighest).padding(horizontal = 14.dp, vertical = 12.dp),
+            ) {
+                if (state.editDraft.isEmpty()) {
+                    Text("Add a comment…", color = c.onSurfaceVariant, fontSize = 15.sp)
+                }
+                BasicTextField(
+                    value = state.editDraft,
+                    onValueChange = { state.editDraft = it },
+                    textStyle = TextStyle(color = c.onSurface, fontSize = 15.sp),
+                    cursorBrush = SolidColor(c.primary),
+                    maxLines = 6,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, capitalization = KeyboardCapitalization.Sentences),
+                    keyboardActions = KeyboardActions(onSend = { state.saveEdit() }, onDone = { state.saveEdit() }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(requester),
+                )
+            }
+            state.editError?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = c.error, fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    Modifier.weight(1f).height(48.dp).pressable(enabled = !state.savingEdit) { state.cancelEdit() }
+                        .clip(RoundedCornerShape(22.dp)).background(c.surfaceContainerHighest),
+                    contentAlignment = Alignment.Center,
+                ) { Text("Cancel", color = c.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+                Box(
+                    Modifier.weight(1f).height(48.dp).pressable(enabled = canSave) { state.saveEdit() }
+                        .clip(RoundedCornerShape(22.dp)).background(if (canSave) c.primary else c.surfaceContainerHighest),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (state.savingEdit) "Saving…" else "Save",
+                        color = if (canSave) c.onPrimary else c.onSurfaceVariant,
+                        fontWeight = FontWeight.ExtraBold, fontSize = 15.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+        }
     }
 }

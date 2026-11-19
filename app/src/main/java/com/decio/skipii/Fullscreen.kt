@@ -272,15 +272,26 @@ fun rememberScreenGestures(activity: Activity): ScreenGestures {
  */
 fun Modifier.screenGestures(
     gestures: ScreenGestures,
+    /**
+     * Where the gesture's usable area starts, in px from the layer's top. Upright fullscreen
+     * passes the top of the picture: the brightness/volume travel is measured from the
+     * screen's bottom edge to the video, not over the video itself.
+     */
+    topInset: () -> Float = { 0f },
     onExitDrag: ((Float) -> Unit)? = null,
     onExitDrop: ((Float) -> Unit)? = null,
 ): Modifier = composed {
     val drag by rememberUpdatedState(onExitDrag)
     val drop by rememberUpdatedState(onExitDrop)
+    val inset = rememberUpdatedState(topInset)
     pointerInput(gestures) {
         val slop = viewConfiguration.touchSlop
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val top = inset.value()
+            if (down.position.y < top) return@awaitEachGesture
+            // A full swipe runs from the screen's bottom to the picture's top edge.
+            val travel = (size.height - top).coerceAtLeast(1f)
             val left = down.position.x < size.width * 0.4f
             val right = down.position.x > size.width * 0.6f
             if (!left && !right && drag == null) return@awaitEachGesture
@@ -303,8 +314,8 @@ fun Modifier.screenGestures(
                 }
                 change.consume()
                 when {
-                    left -> gestures.brightnessBy(-step / size.height)
-                    right -> gestures.volumeBy(-step / size.height)
+                    left -> gestures.brightnessBy(-step / travel)
+                    right -> gestures.volumeBy(-step / travel)
                     else -> drag?.invoke(step)
                 }
             }

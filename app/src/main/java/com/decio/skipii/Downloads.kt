@@ -525,7 +525,11 @@ fun DownloadSheet(state: PlayerState, onDismiss: () -> Unit) {
                         Text(failure, color = c.onSurfaceVariant, fontSize = 13.sp)
                     }
                 }
-                DownloadQualityList(item, onStarted = onDismiss)            }
+                DownloadQualityList(item, onStarted = {
+                    state.actionMessage = "Download started"
+                    onDismiss()
+                })
+            }
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -575,11 +579,6 @@ fun DownloadSettingsCard(showHeader: Boolean = true) {
                     }
                 }
             }
-        }
-        val count = DownloadStore.entries.size
-        if (count > 0) {
-            Spacer(Modifier.height(8.dp))
-            Text("$count downloaded", color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }

@@ -54,6 +54,10 @@ data class VideoItem(
 @Immutable
 data class Chapter(val title: String, val startMs: Long)
 
+/** The chapter containing [positionMs], or the first one before it starts. */
+fun currentChapter(chapters: List<Chapter>?, positionMs: Long): Chapter? =
+    chapters?.lastOrNull { it.startMs <= positionMs } ?: chapters?.firstOrNull()
+
 @Immutable
 data class VideoDetails(
     val item: VideoItem,
@@ -83,6 +87,14 @@ data class ChannelDetails(
     val videosTab: ListLinkHandler?,
 )
 
+/** The tokens YouTube hands the signed-in owner for editing or deleting one of their comments. */
+@Immutable
+data class CommentManage(
+    val editParams: String? = null,
+    val editReplyParams: String? = null,
+    val deleteAction: String? = null,
+)
+
 @Immutable
 data class Comment(
     val id: String,
@@ -103,6 +115,8 @@ data class Comment(
     val repliesToken: String?,
     /** Liked by the signed-in account (from YouTube's toolbar state). */
     val liked: Boolean = false,
+    /** Present only on the account's own comments, when YouTube offers the actions. */
+    val manage: CommentManage? = null,
 )
 
 @Immutable

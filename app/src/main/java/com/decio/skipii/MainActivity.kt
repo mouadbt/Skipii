@@ -104,6 +104,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
@@ -156,6 +157,8 @@ fun SkipiiApp() {
     val startupChannel = remember { NavigationSettings.startupChannelUrl() }
     val startupPlaylist = remember { NavigationSettings.startupPlaylist() }
     var openPlaylist by remember { mutableStateOf(startupPlaylist) }
+    var openDownloads by remember { mutableStateOf(false) }
+    var openHistory by remember { mutableStateOf(false) }
     var openChannels by remember { mutableStateOf(false) }
     var openChannel by remember { mutableStateOf(startupChannel) }
     // Kept after closing so the page can slide out with its content.
@@ -244,9 +247,12 @@ fun SkipiiApp() {
     BackHandler(enabled = player.expanded) { player.expanded = false }
     BackHandler(enabled = !player.expanded && tab != fallbackTab && openPlaylist == null && !openChannels) { tab = fallbackTab }
     BackHandler(enabled = !player.expanded && openPlaylist != null) { openPlaylist = null }
+    BackHandler(enabled = !player.expanded && openDownloads) { openDownloads = false }
+    BackHandler(enabled = !player.expanded && openHistory) { openHistory = false }
     BackHandler(enabled = signingIn) { signingIn = false }
     BackHandler(enabled = !player.expanded && openChannels && openChannel == null) { openChannels = false }
-    BackHandler(enabled = !player.expanded && openChannel != null) { openChannel = null }
+    // A playlist opened from a channel sits on top of it; Back closes the playlist first.
+    BackHandler(enabled = !player.expanded && openChannel != null && openPlaylist == null) { openChannel = null }
     // Registered next-to-last: in upright fullscreen Back returns to the watch page…
     BackHandler(enabled = uprightFullscreen) { exitFullscreen() }
     // …and in landscape fullscreen to the portrait player first (registered last, so it wins).
@@ -342,6 +348,8 @@ fun SkipiiApp() {
                     onSignIn = { signingIn = true }, onAccount = { accountSheet = true },
                     scrollToTop = scrollToTop[Tab.Library] ?: 0,
                     onMessage = { player.actionMessage = it },
+                    onSeeAllDownloads = { openDownloads = true },
+                    onSeeAllHistory = { openHistory = true },
                 )
             }
         }
@@ -349,6 +357,8 @@ fun SkipiiApp() {
         // A playlist opens as a page over the tabs (slides in from the right).
         AnimatedVisibility(
             visible = openPlaylist != null,
+            // Above the channel page it may have been opened from.
+            modifier = Modifier.zIndex(2f),
             enter = if (reduced) fadeIn(snap()) else slideInHorizontally(tween(340, easing = Motion.Emphasized)) { it } + fadeIn(tween(120)),
             exit = if (reduced) fadeOut(snap()) else slideOutHorizontally(tween(300, easing = Motion.Emphasized)) { it } + fadeOut(tween(220)),
         ) {
@@ -367,6 +377,33 @@ fun SkipiiApp() {
                     libraries = lib.playlists,
                 )
             }
+        }
+
+        // Downloads and History open as their own pages from the Library previews.
+        AnimatedVisibility(
+            visible = openDownloads,
+            modifier = Modifier.zIndex(3f),
+            enter = if (reduced) fadeIn(snap()) else slideInHorizontally(tween(340, easing = Motion.Emphasized)) { it } + fadeIn(tween(120)),
+            exit = if (reduced) fadeOut(snap()) else slideOutHorizontally(tween(300, easing = Motion.Emphasized)) { it } + fadeOut(tween(220)),
+        ) {
+            DownloadsScreen(
+                contentPadding = contentPadding,
+                onBack = { openDownloads = false },
+                onOpen = player::open,
+            )
+        }
+        AnimatedVisibility(
+            visible = openHistory,
+            modifier = Modifier.zIndex(3f),
+            enter = if (reduced) fadeIn(snap()) else slideInHorizontally(tween(340, easing = Motion.Emphasized)) { it } + fadeIn(tween(120)),
+            exit = if (reduced) fadeOut(snap()) else slideOutHorizontally(tween(300, easing = Motion.Emphasized)) { it } + fadeOut(tween(220)),
+        ) {
+            HistoryScreen(
+                lib = lib,
+                contentPadding = contentPadding,
+                onBack = { openHistory = false },
+                onOpen = player::open,
+            )
         }
 
         // The full subscriptions list behind the channel rail's See all.
@@ -557,6 +594,7 @@ fun SkipiiApp() {
 
         when (player.sheet) {
             PlayerSheet.Quality -> QualitySheet(player, onDismiss = { player.sheet = null })
+            PlayerSheet.Chapters -> ChaptersSheet(player, onDismiss = { player.sheet = null })
             PlayerSheet.Comments -> Unit // a panel inside the player (PlayerScreen)
             PlayerSheet.Queue -> QueueSheet(player, onDismiss = { player.sheet = null })
             PlayerSheet.Library -> LibrarySheet(player, onDismiss = { player.sheet = null })

@@ -180,6 +180,8 @@ fun LibraryScreen(
     onAccount: () -> Unit,
     scrollToTop: Int = 0,
     onMessage: (String) -> Unit = {},
+    onSeeAllDownloads: () -> Unit = {},
+    onSeeAllHistory: () -> Unit = {},
 ) {
     val signedIn = Account.signedIn
     val scope = rememberCoroutineScope()
@@ -248,14 +250,18 @@ fun LibraryScreen(
         LazyColumn(state = rememberScrollToTop(scrollToTop), contentPadding = contentPadding.withTop(top)) {
             // Downloads stay available signed out and offline: they live in the app itself.
             if (DownloadStore.entries.isNotEmpty()) {
-                item(key = "downloadsTitle") { SectionTitle("Downloads") }
+                item(key = "downloadsTitle") { SectionHeaderWithSeeAll("Downloads", onSeeAllDownloads) }
                 item(key = "downloads") {
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        items(DownloadStore.entries, key = { "d-" + it.video.id }) { entry ->
+                        // Three is the preview; the fourth tile opens the full downloads page.
+                        items(DownloadStore.entries.take(3), key = { "d-" + it.video.id }) { entry ->
                             DownloadCard(entry) { onOpen(entry.video) }
+                        }
+                        item(key = "downloads-all") {
+                            SeeAllCard("All downloads", onSeeAllDownloads)
                         }
                     }
                 }
@@ -271,7 +277,7 @@ fun LibraryScreen(
                 }
                 return@LazyColumn
             }
-            item(key = "historyTitle") { SectionTitle("History") }
+            item(key = "historyTitle") { SectionHeaderWithSeeAll("History", onSeeAllHistory) }
             item(key = "history") {
                 val history = lib.history.videos
                 when {
@@ -279,7 +285,8 @@ fun LibraryScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        items(history.take(20), key = { "h-" + it.id }) { video -> HistoryCard(video) { onOpen(video) } }
+                        items(history.take(3), key = { "h-" + it.id }) { video -> HistoryCard(video) { onOpen(video) } }
+                        item(key = "history-all") { SeeAllCard("Full history", onSeeAllHistory) }
                     }
                     lib.history.loading -> Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                         repeat(3) { VideoRowSkeleton() }
@@ -357,6 +364,65 @@ fun LibraryScreen(
                     modifier = Modifier.pressable(enabled = !working) { confirmDelete = false }.padding(12.dp),
                 )
             },
+        )
+    }
+}
+
+/** A section title with the primary "See more" link that opens its dedicated page. */
+@Composable
+private fun SectionHeaderWithSeeAll(title: String, onSeeAll: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            fontFamily = RoundedHeavy,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 21.sp,
+            letterSpacing = (-0.6).sp,
+        )
+        Text(
+            "See more",
+            color = c.primary,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 13.sp,
+            modifier = Modifier.pressable(pressedScale = 0.94f, onClick = onSeeAll).padding(6.dp),
+        )
+    }
+}
+
+/** The rail's extra tile: the same footprint as a video card, opening the full list. */
+@Composable
+private fun SeeAllCard(label: String, onClick: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    Column(Modifier.width(168.dp).pressable(pressedScale = 0.97f, onClick = onClick)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(20.dp))
+                .background(c.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                ImageVector.vectorResource(R.drawable.solar_playlist),
+                null,
+                tint = c.onPrimaryContainer,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        Spacer(Modifier.height(7.dp))
+        Text(
+            label,
+            color = c.primary,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 13.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

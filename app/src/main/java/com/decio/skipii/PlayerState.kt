@@ -107,7 +107,7 @@ class PlayerState(private val scope: CoroutineScope) {
     /** Which bottom sheet is open over the player, if any. */
     var sheet by mutableStateOf<PlayerSheet?>(null)
 
-    val comments = CommentsState(scope)
+    val comments = CommentsState(scope) { actionMessage = it }
 
     // ── Signed-in account state for the open video (full sync) ──
     /** Like/subscribe state from the account; null while loading or signed out. */
@@ -176,6 +176,9 @@ class PlayerState(private val scope: CoroutineScope) {
         if (startPlayback && offline == null) Net.prewarmMediaConnection()
         current = offline?.video ?: item
         details = null
+        dislikeCount = null
+        dislikesFor = null
+        dislikesJob?.cancel()
         error = null
         firstFrameRendered = false
         videoAspect = 16f / 9f
@@ -379,6 +382,29 @@ class PlayerState(private val scope: CoroutineScope) {
                 .onFailure { Log.w(TAG, "account state for ${item.id}", it) }
         }
         loadMembership(item.id)
+    }
+
+    /** Optional community dislike estimate for the open video. */
+    var dislikeCount by mutableStateOf<Long?>(null)
+        private set
+    private var dislikesFor: String? = null
+    private var dislikesJob: Job? = null
+
+    /** Fetches the dislike estimate when the setting is on (the player asks on open/toggle). */
+    fun loadDislikeCount() {
+        val id = current?.id ?: return
+        if (!PlayerUiSettings.showDislikes) {
+            dislikeCount = null
+            return
+        }
+        if (dislikesFor == id && (dislikeCount != null || dislikesJob?.isActive == true)) return
+        dislikesFor = id
+        dislikeCount = null
+        dislikesJob?.cancel()
+        dislikesJob = scope.launch {
+            val count = DislikeCount.fetch(id)
+            if (current?.id == id) dislikeCount = count
+        }
     }
 
     /** Like count adjusted for the user's own change since the video opened. */
@@ -794,6 +820,6 @@ fun rememberPlayerState(): PlayerState {
     return state
 }
 
-enum class PlayerSheet { Quality, Comments, Queue, Library, Speed, Download }
+enum class PlayerSheet { Quality, Chapters, Comments, Queue, Library, Speed, Download }
 
 private const val TAG = "Skipii"

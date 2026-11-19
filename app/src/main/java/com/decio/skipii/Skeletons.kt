@@ -122,6 +122,24 @@ fun CommentSkeleton(modifier: Modifier = Modifier) {
     }
 }
 
+/** A loading reply, using the same inset, avatar and line heights as a real reply row. */
+@Composable
+fun ReplySkeleton(modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth().padding(start = 62.dp, end = 20.dp, top = 10.dp, bottom = 6.dp)) {
+        SkeletonBox(Modifier.size(28.dp), CircleShape)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            SkeletonBox(Modifier.width(96.dp).height(11.dp))
+            Spacer(Modifier.height(8.dp))
+            SkeletonBox(Modifier.fillMaxWidth().height(11.dp))
+            Spacer(Modifier.height(6.dp))
+            SkeletonBox(Modifier.fillMaxWidth(0.7f).height(11.dp))
+            Spacer(Modifier.height(9.dp))
+            SkeletonBox(Modifier.width(34.dp).height(10.dp))
+        }
+    }
+}
+
 /** A short stack of card skeletons for a whole-page first load (search, history). */
 @Composable
 fun VideoCardSkeletonList(count: Int = 4, modifier: Modifier = Modifier) {

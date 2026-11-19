@@ -26,12 +26,16 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BrightnessMedium
 import androidx.compose.material.icons.rounded.Check
@@ -81,6 +85,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.vectorResource
@@ -243,6 +248,28 @@ fun VideoContent(
                 drawRect(Color.White, size = Size(size.width * played, size.height))
             }
         }
+        // Upright fullscreen the stage is the whole screen, but the playback controls belong
+        // to the picture itself: this layer shares the picture's exact box and travel, so play
+        // and the ±10 s buttons sit in the middle of the video, never the middle of the phone.
+        if (upright) {
+            Box(
+                Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth()
+                    .aspectRatio(state.stageAspect)
+                    .graphicsLayer { translationY = uprightShift() },
+            ) {
+                Box(Modifier.fillMaxSize().graphicsLayer { alpha = visibleAlpha * controlsAlpha() }) {
+                    PlaybackCenterControls(
+                        state = state,
+                        fullscreen = true,
+                        enabled = controlsVisible && interactive,
+                        modifier = Modifier.align(Alignment.Center),
+                        onTouch = ::touched,
+                    )
+                }
+            }
+        }
         SeekBurstPill(burstSide, burstSeconds, burstTaps, burstActive, fullscreen)
 
         val error = state.error
@@ -301,27 +328,15 @@ fun VideoContent(
                         }
                     }
                 }
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(if (fullscreen) 56.dp else 30.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val skip = if (fullscreen) 56.dp else 48.dp
-                    GlassButton(ImageVector.vectorResource(R.drawable.solar_back10), "Back 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
-                        touched(); state.seekBy(-10_000)
-                    }
-                    MorphPlayButton(
-                        playing = state.isPlaying,
-                        buffering = state.isBuffering || (state.loading && state.details == null),
-                        size = if (fullscreen) 76.dp else 66.dp,
-                        // Same glass as the skip buttons.
-                        container = Color.Black.copy(alpha = 0.38f),
-                        content = Color.White,
+                // Upright fullscreen draws these in the picture's own box instead (above).
+                if (!upright) {
+                    PlaybackCenterControls(
+                        state = state,
+                        fullscreen = fullscreen,
                         enabled = enabled,
-                    ) { touched(); state.togglePlay() }
-                    GlassButton(ImageVector.vectorResource(R.drawable.solar_forward10), "Forward 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
-                        touched(); state.seekBy(10_000)
-                    }
+                        modifier = Modifier.align(Alignment.Center),
+                        onTouch = ::touched,
+                    )
                 }
                 Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 14.dp, end = 8.dp, bottom = 6.dp)) {
                     var scrubPreview by remember { mutableStateOf<Long?>(null) }
@@ -333,6 +348,32 @@ fun VideoContent(
                             " / " + formatDuration(state.durationMs),
                             color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp, fontWeight = FontWeight.Bold,
                         )
+                        // Fullscreen: the chapter's name sits right after the time, without its
+                        // own time. It stays short enough for the control cluster and opens the
+                        // chapters sheet (the same bottom slider as quality).
+                        if (fullscreen) {
+                            currentChapter(state.details?.chapters, state.positionMs)?.let { chapter ->
+                                Spacer(Modifier.width(8.dp))
+                                val title = chapter.title.trim().let {
+                                    if (it.length > 24) it.take(23).trimEnd() + "…" else it
+                                }
+                                Text(
+                                    title,
+                                    color = Color.White.copy(alpha = 0.88f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .widthIn(max = 150.dp)
+                                        .clip(RoundedCornerShape(7.dp))
+                                        .pressable(enabled = enabled) {
+                                            touched(); state.sheet = PlayerSheet.Chapters
+                                        }
+                                        .padding(horizontal = 5.dp, vertical = 3.dp),
+                                )
+                            }
+                        }
                         Spacer(Modifier.weight(1f))
                         state.askSegment?.let { segment ->
                             SkipSegmentPill(segment, enabled = true) { touched(); state.skipSegment(segment) }
@@ -381,6 +422,39 @@ fun VideoContent(
                     )
                 }
             }
+        }
+    }
+}
+
+/** Play/pause with the ±10 s skips: the row the video's picture centres on. */
+@Composable
+private fun PlaybackCenterControls(
+    state: PlayerState,
+    fullscreen: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onTouch: () -> Unit,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(if (fullscreen) 56.dp else 30.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val skip = if (fullscreen) 56.dp else 48.dp
+        GlassButton(ImageVector.vectorResource(R.drawable.solar_back10), "Back 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
+            onTouch(); state.seekBy(-10_000)
+        }
+        MorphPlayButton(
+            playing = state.isPlaying,
+            buffering = state.isBuffering || (state.loading && state.details == null),
+            size = if (fullscreen) 76.dp else 66.dp,
+            // Same glass as the skip buttons.
+            container = Color.Black.copy(alpha = 0.38f),
+            content = Color.White,
+            enabled = enabled,
+        ) { onTouch(); state.togglePlay() }
+        GlassButton(ImageVector.vectorResource(R.drawable.solar_forward10), "Forward 10 seconds", enabled, size = skip, iconSize = skip * 0.62f) {
+            onTouch(); state.seekBy(10_000)
         }
     }
 }
@@ -653,13 +727,85 @@ fun QualitySheet(state: PlayerState, onDismiss: () -> Unit) {
                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
             )
         }
-        QualityRow("Auto", "Best up to 1080p" + ((state.decodedHeight?.let { "${it}p" } ?: details.quality)?.let { " · playing $it" } ?: ""), chosen == null) {
-            state.setQuality(null); onDismiss()
+        // Fixed ceiling, shorter in landscape: the sheet never grows to the whole screen and
+        // every quality stays reachable by scrolling.
+        val listHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.5f).coerceAtLeast(160.dp)
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = listHeight)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            QualityRow("Auto", "Best up to 1080p" + ((state.decodedHeight?.let { "${it}p" } ?: details.quality)?.let { " · playing $it" } ?: ""), chosen == null) {
+                state.setQuality(null); onDismiss()
+            }
+            details.qualities.forEach { h ->
+                QualityRow("${h}p", qualityTag(h), chosen == h) { state.setQuality(h); onDismiss() }
+            }
+            Spacer(Modifier.height(28.dp))
         }
-        details.qualities.forEach { h ->
-            QualityRow("${h}p", qualityTag(h), chosen == h) { state.setQuality(h); onDismiss() }
+    }
+}
+
+/** The chapter picker: a bottom sheet that scrolls, like the quality menu. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChaptersSheet(state: PlayerState, onDismiss: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    val chapters = state.details?.chapters ?: return
+    val current = currentChapter(chapters, state.positionMs)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surfaceContainerLow,
+    ) {
+        Text(
+            "Chapters",
+            fontFamily = RoundedHeavy, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
+        )
+        val listHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.55f).coerceAtLeast(180.dp)
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = listHeight)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            chapters.forEach { chapter ->
+                val active = chapter == current
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .pressable(pressedScale = 0.98f) {
+                            state.seekTo(chapter.startMs)
+                            onDismiss()
+                        }
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (active) c.primaryContainer else c.primaryContainer.copy(alpha = 0f))
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        formatDuration(chapter.startMs),
+                        color = if (active) c.onPrimaryContainer else c.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.width(54.dp),
+                    )
+                    Text(
+                        chapter.title,
+                        color = if (active) c.onPrimaryContainer else c.onSurface,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Spacer(Modifier.height(28.dp))
         }
-        Spacer(Modifier.height(28.dp))
     }
 }
 

@@ -35,18 +35,20 @@ object CommentPosting {
 
     fun forget(videoId: String) { cache.remove(videoId) }
 
-    suspend fun comment(videoId: String, text: String) = withContext(Dispatchers.IO) {
+    suspend fun comment(videoId: String, text: String): JSONObject = withContext(Dispatchers.IO) {
         val params = lock.withLock {
             val vp = cache.getOrPut(videoId) { VideoParams() }
             if (!vp.started) loadFirstPage(videoId, vp)
             vp.createComment
         } ?: throw IOException("Comments are turned off or can't be posted on this video.")
-        checkPosted(
-            InnerTube.post("comment/create_comment", JSONObject().put("commentText", text).put("createCommentParams", params)),
+        val response = InnerTube.post(
+            "comment/create_comment", JSONObject().put("commentText", text).put("createCommentParams", params),
         )
+        checkPosted(response)
+        response
     }
 
-    suspend fun reply(videoId: String, threadId: String, text: String) = withContext(Dispatchers.IO) {
+    suspend fun reply(videoId: String, threadId: String, text: String): JSONObject = withContext(Dispatchers.IO) {
         val params = lock.withLock {
             val vp = cache.getOrPut(videoId) { VideoParams() }
             if (!vp.started) loadFirstPage(videoId, vp)
@@ -57,9 +59,40 @@ object CommentPosting {
             }
             vp.reply[threadId]
         } ?: throw IOException("Couldn't find that comment to reply to. Try again.")
-        checkPosted(
-            InnerTube.post("comment/create_comment_reply", JSONObject().put("commentText", text).put("createReplyParams", params)),
+        val response = InnerTube.post(
+            "comment/create_comment_reply", JSONObject().put("commentText", text).put("createReplyParams", params),
         )
+        checkPosted(response)
+        response
+    }
+
+    /** Saves an edit using the tokens from the comment's own toolbar menu. */
+    suspend fun update(videoId: String, comment: Comment, text: String) = withContext(Dispatchers.IO) {
+        val manage = comment.manage ?: throw IOException("YouTube didn't offer an edit for that comment.")
+        val replyParams = manage.editReplyParams
+        val response = if (replyParams != null) {
+            InnerTube.post(
+                "comment/update_comment_reply",
+                JSONObject().put("replyText", text).put("updateReplyParams", replyParams),
+            )
+        } else {
+            val params = manage.editParams ?: throw IOException("YouTube didn't offer an edit for that comment.")
+            InnerTube.post(
+                "comment/update_comment",
+                JSONObject().put("commentText", text).put("updateCommentParams", params),
+            )
+        }
+        checkChanged(response, "save that edit")
+    }
+
+    /** Deletes one of the account's comments using its menu's perform-comment-action token. */
+    suspend fun delete(videoId: String, comment: Comment) = withContext(Dispatchers.IO) {
+        val action = comment.manage?.deleteAction
+            ?: throw IOException("YouTube didn't offer a delete for that comment.")
+        val response = InnerTube.post(
+            "comment/perform_comment_action", JSONObject().put("actions", JSONArray().put(action)),
+        )
+        checkChanged(response, "delete that comment")
     }
 
     /** Likes or unlikes a comment. Looks further into the thread pages if needed. */
@@ -156,6 +189,15 @@ object CommentPosting {
         if ("STATUS_FAILED" in text || !(text.contains("createCommentAction") || text.contains("createCommentReplyAction") || text.contains("STATUS_SUCCEEDED"))) {
             Log.w("Skipii", "comment post response: ${text.take(600)}")
             throw IOException("YouTube didn't accept the comment.")
+        }
+    }
+
+    /** Edits/deletes have no single success key across clients; only a reported failure is fatal. */
+    private fun checkChanged(response: JSONObject, what: String) {
+        val text = response.toString()
+        if (response.has("error") || "STATUS_FAILED" in text) {
+            Log.w("Skipii", "comment action response: ${text.take(600)}")
+            throw IOException("YouTube couldn't $what.")
         }
     }
 }

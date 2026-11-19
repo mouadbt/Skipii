@@ -38,6 +38,9 @@ object PlayerUiSettings {
         private set
     var hideChannelBar by mutableStateOf(false)
         private set
+    /** Off by default: the dislike estimate comes from a third-party API. */
+    var showDislikes by mutableStateOf(false)
+        private set
 
     fun init(context: Context) {
         val p = context.getSharedPreferences("player_ui", Context.MODE_PRIVATE).also { prefs = it }
@@ -48,6 +51,7 @@ object PlayerUiSettings {
         hideRelated = p.getBoolean("hide_related", false)
         hideComments = p.getBoolean("hide_comments", false)
         hideChannelBar = p.getBoolean("hide_channel", false)
+        showDislikes = p.getBoolean("show_dislikes", false)
     }
 
     fun visible(action: Action): Boolean = hidden[action.id] != true
@@ -84,12 +88,18 @@ object PlayerUiSettings {
         prefs?.edit()?.putBoolean("hide_channel", value)?.apply()
     }
 
+    fun updateShowDislikes(value: Boolean) {
+        showDislikes = value
+        prefs?.edit()?.putBoolean("show_dislikes", value)?.apply()
+    }
+
     fun reset() {
         order = defaults
         Action.entries.forEach { hidden[it.id] = false }
         hideRelated = false
         hideComments = false
         hideChannelBar = false
+        showDislikes = false
         prefs?.edit()?.clear()?.apply()
     }
 

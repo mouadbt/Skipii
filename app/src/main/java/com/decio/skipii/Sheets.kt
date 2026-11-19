@@ -97,7 +97,10 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
             return@ModalBottomSheet
         }
         if (downloading) {
-            DownloadQualityList(video, onStarted = onDismiss)
+            DownloadQualityList(video, onStarted = {
+                player.actionMessage = "Download started"
+                onDismiss()
+            })
             Spacer(Modifier.height(24.dp))
             return@ModalBottomSheet
         }
@@ -140,7 +143,10 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
         ) {
             when {
                 download != null -> DownloadStore.remove(video.id)
-                !DownloadSettings.askEachTime -> DownloadStore.download(video, DownloadSettings.qualityHeight)
+                !DownloadSettings.askEachTime -> {
+                    DownloadStore.download(video, DownloadSettings.qualityHeight)
+                    player.actionMessage = "Download started"
+                }
                 else -> downloading = true
             }
             if (download != null || !DownloadSettings.askEachTime) onDismiss()
@@ -319,6 +325,9 @@ fun PlayerSettings(showHeader: Boolean = true) {
         }
         ChromeSwitch("Related videos", "Videos related to this one", !PlayerUiSettings.hideRelated) {
             PlayerUiSettings.updateHideRelated(!it)
+        }
+        ChromeSwitch("Dislike count", "Optional estimate from Return YouTube Dislike", PlayerUiSettings.showDislikes) {
+            PlayerUiSettings.updateShowDislikes(it)
         }
         Spacer(Modifier.height(14.dp))
         Text("Buttons under the channel bar", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)

@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -78,6 +79,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -175,11 +177,20 @@ fun PlayerScreen(
     // so they stay visible while they drop away.
     val uprightLanded by remember { derivedStateOf { state.uprightFullscreen && full.progress.value >= 1f } }
     val density = LocalDensity.current
+    // Upright fullscreen pictures the video centred on the black stage. Its top edge is where
+    // the brightness/volume swipes stop counting, so one full swipe runs from the phone's
+    // bottom edge to the picture — not across the whole screen.
+    val uprightVideoTopPx = with(density) {
+        ((config.screenHeightDp.dp - config.screenWidthDp.dp / state.stageAspect.coerceAtLeast(0.1f)) / 2)
+            .coerceAtLeast(0.dp)
+            .toPx()
+    }
     SideEffect {
         full.travel = with(density) { travel.toPx() }
         full.pull = with(density) { FullscreenPull.toPx() }
     }
     LaunchedEffect(state.uprightFullscreen, item.id) { full.animateTo(state.uprightFullscreen, reduced) }
+    LaunchedEffect(item.id, PlayerUiSettings.showDislikes) { state.loadDislikeCount() }
 
     val pageColor = c.surface
     val miniColor = NavBarSettings.color(c.surfaceContainerHighest, c.primary, c.background)
@@ -220,6 +231,7 @@ fun PlayerScreen(
             .then(
                 if (state.uprightFullscreen) Modifier.screenGestures(
                     gestures,
+                    topInset = { uprightVideoTopPx },
                     onExitDrag = { delta -> full.dragBack(delta) },
                     onExitDrop = { velocity -> full.settle(-velocity, reduced) },
                 ) else Modifier,
@@ -233,7 +245,8 @@ fun PlayerScreen(
                 .graphicsLayer { alpha = ramp(morph.progress.value, DetailsFadeStart) * (1f - ramp(full.progress.value, 0f, 0.6f)) }
                 .background(Brush.verticalGradient(listOf(c.primaryContainer.copy(alpha = 0.75f), c.surface))),
         )
-        ActionMessage(state, Modifier.align(Alignment.BottomCenter).zIndex(2f).padding(bottom = bottom + 24.dp))
+        // Above the comments panel too, so posting a comment shows its confirmation.
+        ActionMessage(state, Modifier.align(Alignment.BottomCenter).zIndex(10f).padding(bottom = bottom + 24.dp))
         Column(Modifier.fillMaxSize()) {
             // The video's room, kept whether or not the stage is in it: upright fullscreen hands
             // the stage the whole screen, and the details must not move when it does.
@@ -308,22 +321,6 @@ fun PlayerScreen(
                                 fontWeight = FontWeight.Medium,
                             )
                         }
-                        if (details?.chapters?.isNotEmpty() == true) {
-                            Spacer(Modifier.height(10.dp))
-                            Text("Chapters", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
-                            details.chapters.forEach { chapter ->
-                                Text(
-                                    "${formatDuration(chapter.startMs)}  ${chapter.title}",
-                                    color = c.onSurfaceVariant,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .pressable { state.seekTo(chapter.startMs) }
-                                        .padding(vertical = 4.dp),
-                                )
-                            }
-                        }
                         if (!PlayerUiSettings.hideChannelBar) {
                             Spacer(Modifier.height(16.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -349,6 +346,9 @@ fun PlayerScreen(
                             }
                         }
                         PlayerActions(state)
+                        if (details?.chapters?.isNotEmpty() == true) {
+                            ChapterRail(details.chapters, state.positionMs) { state.seekTo(it) }
+                        }
                         QueueCard(state, onOpen = { state.sheet = PlayerSheet.Queue })
                         if (!PlayerUiSettings.hideComments) {
                             CommentsCard(state.comments, onOpen = { state.sheet = PlayerSheet.Comments })
@@ -724,6 +724,66 @@ private fun PlayerActions(state: PlayerState) {
     }
 }
 
+/**
+ * Chapters in the same pill language as the player actions: one horizontally scrolling row,
+ * each pill carrying its time and name. Tapping a pill seeks straight to that chapter.
+ */
+@Composable
+private fun ChapterRail(chapters: List<Chapter>, positionMs: Long, onSeek: (Long) -> Unit) {
+    val c = MaterialTheme.colorScheme
+    val current = currentChapter(chapters, positionMs)
+    Row(
+        Modifier
+            .padding(top = 10.dp)
+            .bleed(20.dp)
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        chapters.forEach { chapter ->
+            val active = chapter == current
+            val bg by androidx.compose.animation.animateColorAsState(
+                if (active) c.primary else c.surfaceContainerHigh, tween(220), label = "chapterBg",
+            )
+            val tint = if (active) c.onPrimary else c.onSurface
+            Row(
+                Modifier
+                    .squishOn(active)
+                    .height(44.dp)
+                    .pressable(pressedScale = 0.96f) { onSeek(chapter.startMs) }
+                    .background(bg, RoundedCornerShape(22.dp))
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    ImageVector.vectorResource(R.drawable.solar_clock),
+                    null,
+                    tint = tint,
+                    modifier = Modifier.size(17.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    formatDuration(chapter.startMs),
+                    color = tint.copy(alpha = 0.72f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    chapter.title,
+                    color = tint,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 150.dp),
+                )
+            }
+        }
+    }
+}
+
 /** Lays the content out [x] wider on each side than the parent's padding allows. */
 private fun Modifier.bleed(x: androidx.compose.ui.unit.Dp) = layout { measurable, constraints ->
     val extra = (x * 2).roundToPx()
@@ -753,7 +813,7 @@ private fun ReactionPills(state: PlayerState) {
         ) { state.setLike(LikeStatus.Like) }
         ActionPill(
             icon = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(R.drawable.solar_dislike),
-            label = null,
+            label = if (PlayerUiSettings.showDislikes) state.dislikeCount?.let { formatCount(it) } else null,
             active = like == LikeStatus.Dislike,
             flourish = Flourish.Droop,
             shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 22.dp, bottomEnd = 22.dp),
@@ -837,7 +897,10 @@ private fun DownloadPill(state: PlayerState) {
         when {
             entry != null || progress != null -> state.sheet = PlayerSheet.Download
             DownloadSettings.askEachTime -> state.sheet = PlayerSheet.Download
-            else -> DownloadStore.download(item, DownloadSettings.qualityHeight)
+            else -> {
+                DownloadStore.download(item, DownloadSettings.qualityHeight)
+                state.actionMessage = "Download started"
+            }
         }
     }
 }
@@ -866,11 +929,13 @@ private fun ActionPill(
     val c = MaterialTheme.colorScheme
     val bg by androidx.compose.animation.animateColorAsState(if (active) c.primary else c.surfaceContainerHigh, tween(220), label = "pillBg")
     val tint by androidx.compose.animation.animateColorAsState(if (active) c.onPrimary else c.onSurface, tween(220), label = "pillInk")
+    var taps by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     Row(
         modifier = Modifier
+            .bounceOnTap(taps)
             .squishOn(active)
             .height(44.dp)
-            .pressable(onClick = onClick)
+            .pressable { taps++; onClick() }
             // background(shape), not clip: the like sparks may fly past the pill's edge.
             .background(bg, shape)
             .animateContentSize(spring(dampingRatio = 0.7f, stiffness = 500f))

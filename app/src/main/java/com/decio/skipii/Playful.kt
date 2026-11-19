@@ -145,6 +145,18 @@ fun RollingText(text: String, color: Color, up: Boolean, fontSize: TextUnit = 14
     ) { value -> Text(value, color = color, fontWeight = FontWeight.ExtraBold, fontSize = fontSize) }
 }
 
+/** A one-shot squish on tap, for buttons that don't change between on and off. */
+@Composable
+fun Modifier.bounceOnTap(trigger: Int): Modifier {
+    val reduced = rememberReducedMotion()
+    val s = remember { Animatable(1f) }
+    LaunchedEffect(trigger) {
+        if (trigger == 0 || reduced) return@LaunchedEffect
+        s.animateTo(1f, keyframes { durationMillis = 420; 0.88f at 70; 1.06f at 220; 1f at 420 })
+    }
+    return graphicsLayer { scaleX = s.value; scaleY = s.value }
+}
+
 /** A squish on press-to-on: the whole control compresses and springs back past full size. */
 @Composable
 fun Modifier.squishOn(active: Boolean): Modifier {

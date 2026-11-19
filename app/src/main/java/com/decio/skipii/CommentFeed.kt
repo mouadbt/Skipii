@@ -42,12 +42,7 @@ object CommentFeed {
 
     internal fun parsePage(page: JSONObject): CommentsPage {
         // Mutations are array elements, so this needs forEachObject (walk skips those).
-        val entities = HashMap<String, JSONObject>()
-        page.forEachObject { obj ->
-            val key = obj.optString("entityKey")
-            val payload = obj.optJSONObject("payload")
-            if (key.isNotEmpty() && payload != null) entities[key] = payload
-        }
+        val entities = entities(page)
         val comments = ArrayList<Comment>()
         var total = -1
         var next: String? = null
@@ -76,6 +71,37 @@ object CommentFeed {
         return CommentsPage(unique, total, disabled = false, next = next)
     }
 
+    /**
+     * The comment YouTube returns right after posting. The create response carries the new
+     * thread (or reply) plus the owner's toolbar, so the row can be edited/deleted immediately
+     * instead of waiting for a reload.
+     */
+    internal fun created(page: JSONObject): Comment? {
+        val entities = entities(page)
+        var found: Comment? = null
+        page.forEachObject { obj ->
+            if (found != null) return@forEachObject
+            if (obj.has("commentThreadRenderer")) {
+                val thread = obj.getJSONObject("commentThreadRenderer")
+                val repliesToken = thread.optJSONObject("replies")?.collectStrings("token")?.firstOrNull()
+                thread.viewModel()?.let { found = parseComment(it, entities, repliesToken) }
+            } else if (obj.has("commentKey") && obj.has("commentId")) {
+                found = parseComment(obj, entities, null)
+            }
+        }
+        return found
+    }
+
+    private fun entities(page: JSONObject): Map<String, JSONObject> {
+        val entities = HashMap<String, JSONObject>()
+        page.forEachObject { obj ->
+            val key = obj.optString("entityKey")
+            val payload = obj.optJSONObject("payload")
+            if (key.isNotEmpty() && payload != null) entities[key] = payload
+        }
+        return entities
+    }
+
     /** The innermost commentViewModel (threads nest it twice: commentViewModel.commentViewModel). */
     private fun JSONObject.viewModel(): JSONObject? {
         var found: JSONObject? = null
@@ -89,6 +115,7 @@ object CommentFeed {
         val author = entity.optJSONObject("author")
         val toolbar = entity.optJSONObject("toolbar")
         val state = entities[vm.optString("toolbarStateKey")]?.optJSONObject("engagementToolbarStateEntityPayload")
+        val surface = entities[vm.optString("toolbarSurfaceKey")]?.optJSONObject("engagementToolbarSurfaceEntityPayload")
         val replyCount = toolbar?.optString("replyCount")?.let { InnerTube.parseViews(it) }?.takeIf { it > 0 }?.toInt() ?: 0
         return Comment(
             id = props.optString("commentId").ifBlank { vm.optString("commentId") }.ifBlank { return null },
@@ -103,7 +130,50 @@ object CommentFeed {
             replyCount = replyCount,
             repliesToken = repliesToken?.takeIf { replyCount > 0 },
             liked = state?.optString("likeState") == "TOOLBAR_LIKE_STATE_LIKED",
+            manage = manage(surface),
         )
+    }
+
+    /**
+     * Owner-only menu entries. YouTube puts the edit tokens inside the edit dialog's submit
+     * command and the delete token on the matching menu item, so both are read from the
+     * toolbar surface rather than guessed or encoded here.
+     */
+    private fun manage(surface: JSONObject?): CommentManage? {
+        if (surface == null) return null
+        var menu: JSONObject? = null
+        surface.forEachObject { obj ->
+            if (menu != null) return@forEachObject
+            val items = obj.optJSONArray("items") ?: return@forEachObject
+            if ((0 until items.length()).any { items.optJSONObject(it)?.has("menuServiceItemRenderer") == true }) menu = obj
+        }
+        val menuItems = menu?.optJSONArray("items") ?: return null
+        var editParams: String? = null
+        var editReplyParams: String? = null
+        var deleteAction: String? = null
+        var fallbackDelete: String? = null
+        for (i in 0 until menuItems.length()) {
+            val wrapper = menuItems.optJSONObject(i) ?: continue
+            val item = wrapper.optJSONObject("menuServiceItemRenderer") ?: wrapper
+            item.collectStrings("updateCommentParams").firstOrNull()?.let { editParams = it }
+            item.collectStrings("updateReplyParams").firstOrNull()?.let { editReplyParams = it }
+            var action: String? = null
+            item.forEachObject { node ->
+                node.optJSONObject("performCommentActionEndpoint")?.optString("action")
+                    ?.takeIf { it.isNotBlank() }?.let { action = it }
+            }
+            val actionToken = action ?: continue
+            val label = item.text("text")?.lowercase().orEmpty()
+            val icon = item.collectStrings("iconType").firstOrNull().orEmpty().lowercase()
+            when {
+                "delete" in label || "remove" in label || "delete" in icon || "remove" in icon -> deleteAction = actionToken
+                label.isNotBlank() || icon.isNotBlank() -> Unit
+                else -> if (fallbackDelete == null) fallbackDelete = actionToken
+            }
+        }
+        if (editParams == null && editReplyParams == null && deleteAction == null) deleteAction = fallbackDelete
+        return CommentManage(editParams, editReplyParams, deleteAction)
+            .takeIf { it.editParams != null || it.editReplyParams != null || it.deleteAction != null }
     }
 }
 
