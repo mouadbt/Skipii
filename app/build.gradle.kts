@@ -15,8 +15,8 @@ android {
         applicationId = "com.skipii.onevoidtube"
         minSdk = 26
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.6.4"
+        versionCode = 40
+        versionName = "0.6.5"
     }
 
     buildTypes {

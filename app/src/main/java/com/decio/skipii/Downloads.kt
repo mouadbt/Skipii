@@ -137,6 +137,7 @@ object DownloadStore {
     fun init(context: Context) {
         dir = File(context.filesDir, "downloads").apply { mkdirs() }
         metaFile = File(dir, META)
+        DownloadNotifications.init(context)
         // Half-written temp files from an interrupted process are useless.
         dir.listFiles()?.filter { it.name.endsWith(".part") }?.forEach { runCatching { it.delete() } }
         load()
@@ -158,6 +159,7 @@ object DownloadStore {
     fun download(video: VideoItem, height: Int) {
         if (byId.containsKey(video.id) || jobs.containsKey(video.id)) return
         failures.remove(video.id)
+        DownloadNotifications.start(video)
         jobs[video.id] = scope.launch {
             var videoFile: File? = null
             var audioFile: File? = null
@@ -165,31 +167,36 @@ object DownloadStore {
                 val info = StreamCache.getOrLoad(video.id)
                 val plan = planFor(info, height) ?: throw IOException("No downloadable stream was found.")
                 videoFile = File(dir, "${video.id}-${plan.height}.${extension(plan.videoFormat)}")
-                val videoBytes = fetch(plan.videoUrl, videoFile, video.id, base = 0L)
+                val videoBytes = fetch(plan.videoUrl, videoFile, video, base = 0L)
                 var audioBytes = 0L
                 if (plan.audioUrl != null) {
                     audioFile = File(dir, "${video.id}-audio.${extension(plan.audioFormat)}")
-                    audioBytes = fetch(plan.audioUrl, audioFile, video.id, base = videoBytes)
+                    audioBytes = fetch(plan.audioUrl, audioFile, video, base = videoBytes)
                 }
+                val bytes = videoBytes + audioBytes
                 val entry = DownloadEntry(
                     video = video,
                     height = plan.height,
                     videoFile = videoFile.name,
                     audioFile = audioFile?.name,
-                    bytes = videoBytes + audioBytes,
+                    bytes = bytes,
                     createdAt = System.currentTimeMillis(),
                 )
                 byId[video.id] = entry
                 entries = (listOf(entry) + entries).sortedByDescending { it.createdAt }
                 save()
+                DownloadNotifications.complete(video, plan.height, bytes)
             } catch (e: CancellationException) {
                 videoFile?.delete()
                 audioFile?.delete()
+                DownloadNotifications.clear(video.id)
                 throw e
             } catch (e: Exception) {
                 videoFile?.delete()
                 audioFile?.delete()
-                failures[video.id] = YouTube.friendlyError(e)
+                val message = YouTube.friendlyError(e)
+                failures[video.id] = message
+                DownloadNotifications.failed(video, message)
             } finally {
                 jobs.remove(video.id)
                 running.remove(video.id)
@@ -199,6 +206,7 @@ object DownloadStore {
 
     fun cancel(id: String) {
         jobs.remove(id)?.cancel()
+        DownloadNotifications.clear(id)
     }
 
     fun remove(id: String) {
@@ -249,7 +257,8 @@ object DownloadStore {
      * stopped. Returns the bytes written; progress includes [base] from any already-finished
      * file so a two-file download reports one continuous bar.
      */
-    private fun fetch(url: String, target: File, id: String, base: Long): Long {
+    private fun fetch(url: String, target: File, video: VideoItem, base: Long): Long {
+        val id = video.id
         val part = File(target.parentFile, target.name + ".part")
         val chunk = 8L * 1024 * 1024
         var written = 0L
@@ -283,10 +292,12 @@ object DownloadStore {
                                 written += n
                                 got += n
                                 room -= n
-                                running[id] = DownloadProgress(
+                                val progress = DownloadProgress(
                                     base + written,
                                     if (fileTotal > 0) base + fileTotal else 0L,
                                 )
+                                running[id] = progress
+                                DownloadNotifications.update(video, progress)
                             }
                         }
                     }
