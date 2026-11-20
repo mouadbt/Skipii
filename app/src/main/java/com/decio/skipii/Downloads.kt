@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -397,14 +398,20 @@ object DownloadStore {
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 
-/** A download card in the Library's Downloads rail. Tap plays it; the x removes the files. */
+/**
+ * A download card in the Library's Downloads rail. Tap plays it, long-press opens the normal
+ * video options, and the x asks before deleting the saved files.
+ */
 @Composable
 fun DownloadCard(entry: DownloadEntry, onClick: () -> Unit) {
     val c = MaterialTheme.colorScheme
+    val menu = LocalVideoMenu.current
+    var confirmRemove by remember(entry.video.id) { mutableStateOf(false) }
     Column(
         Modifier
             .width(168.dp)
-            .pressable(pressedScale = 0.97f, onClick = onClick),
+            .prefetchOnPress(entry.video.id)
+            .pressable(pressedScale = 0.97f, onLongClick = { menu(entry.video) }, onClick = onClick),
     ) {
         Box {
             Thumbnail(entry.video.thumbnail, Modifier.fillMaxWidth().aspectRatio(16f / 9f), radius = 20)
@@ -413,7 +420,7 @@ fun DownloadCard(entry: DownloadEntry, onClick: () -> Unit) {
                     .align(Alignment.TopEnd)
                     .padding(6.dp)
                     .size(30.dp)
-                    .pressable { DownloadStore.remove(entry.video.id) }
+                    .pressable { confirmRemove = true }
                     .clip(CircleShape)
                     .background(c.surface.copy(alpha = 0.86f)),
                 contentAlignment = Alignment.Center,
@@ -433,6 +440,43 @@ fun DownloadCard(entry: DownloadEntry, onClick: () -> Unit) {
         Text(entry.video.title, fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(entry.video.channel, color = c.onSurfaceVariant, fontSize = 11.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+    if (confirmRemove) {
+        RemoveDownloadDialog(
+            count = 1,
+            onDismiss = { confirmRemove = false },
+            onConfirm = {
+                DownloadStore.remove(entry.video.id)
+                confirmRemove = false
+            },
+        )
+    }
+}
+
+/** Shared confirmation for every way a downloaded video can be deleted. */
+@Composable
+fun RemoveDownloadDialog(count: Int, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (count == 1) "Remove download?" else "Remove $count downloads?") },
+        text = { Text("This deletes the saved file from Skipii. You can download it again when online.") },
+        confirmButton = {
+            Text(
+                "Remove",
+                color = c.error,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier.pressable(onClick = onConfirm).padding(12.dp),
+            )
+        },
+        dismissButton = {
+            Text(
+                "Cancel",
+                color = c.onSurfaceVariant,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.pressable(onClick = onDismiss).padding(12.dp),
+            )
+        },
+    )
 }
 
 /**
@@ -491,6 +535,7 @@ fun DownloadSheet(state: PlayerState, onDismiss: () -> Unit) {
     val entry = DownloadStore.entry(item.id)
     val progress = DownloadStore.progressOf(item.id)
     val failure = DownloadStore.failureOf(item.id)
+    var confirmRemove by remember(item.id) { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -508,7 +553,7 @@ fun DownloadSheet(state: PlayerState, onDismiss: () -> Unit) {
             entry != null -> {
                 OptionRow(Icons.Rounded.DownloadDone, "Saved offline · ${entry.height}p", tint = c.primary) {}
                 OptionRow(Icons.Rounded.CheckCircle, "Play from this download") { state.open(entry.video); onDismiss() }
-                OptionRow(Icons.Rounded.Close, "Remove download") { DownloadStore.remove(item.id); onDismiss() }
+                OptionRow(Icons.Rounded.Close, "Remove download") { confirmRemove = true }
             }
             progress != null -> {
                 Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
@@ -543,6 +588,17 @@ fun DownloadSheet(state: PlayerState, onDismiss: () -> Unit) {
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+    if (confirmRemove) {
+        RemoveDownloadDialog(
+            count = 1,
+            onDismiss = { confirmRemove = false },
+            onConfirm = {
+                DownloadStore.remove(item.id)
+                confirmRemove = false
+                onDismiss()
+            },
+        )
     }
 }
 

@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
@@ -20,6 +21,9 @@ import java.util.concurrent.ConcurrentHashMap
  * the count and the individual titles.
  */
 object DownloadNotifications {
+    /** Tells the app to open its Downloads page when a download notification is tapped. */
+    const val EXTRA_OPEN_DOWNLOADS = "com.decio.skipii.extra.OPEN_DOWNLOADS"
+
     private const val CHANNEL = "downloads"
     private const val GROUP = "skipii.downloads"
     private const val SUMMARY_ID = 0x5D0A
@@ -168,7 +172,10 @@ object DownloadNotifications {
             .setPriority(NotificationCompat.PRIORITY_LOW)
 
     private fun openApp(ctx: Context): PendingIntent? {
-        val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: return null
+        val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.apply {
+            putExtra(EXTRA_OPEN_DOWNLOADS, true)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        } ?: return null
         return PendingIntent.getActivity(
             ctx, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

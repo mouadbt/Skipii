@@ -2,6 +2,7 @@ package com.decio.skipii
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.os.Build
@@ -111,6 +112,9 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    // Incremented whenever a download notification is tapped. The composable watches it so
+    // the request also works when the activity is already open (launchMode="singleTask").
+    private var downloadsRequest by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -121,7 +125,21 @@ class MainActivity : ComponentActivity() {
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        setContent { SkipiiTheme { SkipiiApp() } }
+        consumeDownloadsRequest(intent)
+        setContent { SkipiiTheme { SkipiiApp(downloadsRequest) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeDownloadsRequest(intent)
+    }
+
+    private fun consumeDownloadsRequest(intent: Intent?) {
+        if (intent?.getBooleanExtra(DownloadNotifications.EXTRA_OPEN_DOWNLOADS, false) != true) return
+        // Never let a configuration change repeat the navigation.
+        intent.removeExtra(DownloadNotifications.EXTRA_OPEN_DOWNLOADS)
+        downloadsRequest++
     }
 }
 
@@ -144,7 +162,7 @@ private val MiniGap = 0.dp
 private const val SELECTED_TAB_WEIGHT = 2.2f
 
 @Composable
-fun SkipiiApp() {
+fun SkipiiApp(downloadsRequest: Int = 0) {
     val c = MaterialTheme.colorScheme
     val navColor = NavBarSettings.color(c.surfaceContainerHighest, c.primary, c.background)
     val player = rememberPlayerState()
@@ -172,6 +190,19 @@ fun SkipiiApp() {
     val scrollToTop = remember { mutableStateMapOf<Tab, Int>() }
     val reduced = rememberReducedMotion()
     val morph = remember { PlayerMorph(scope) { expanded -> player.expanded = expanded } }
+
+    // A tapped download notification lands on the Downloads page, not just the app.
+    LaunchedEffect(downloadsRequest) {
+        if (downloadsRequest <= 0) return@LaunchedEffect
+        player.expanded = false
+        accountSheet = false
+        signingIn = false
+        openPlaylist = null
+        openChannels = false
+        openChannel = null
+        openHistory = false
+        openDownloads = true
+    }
 
     // The screen stays on while a video plays (full player, mini-player or fullscreen);
     // paused, the normal timeout applies again. Only affects the visible window.
@@ -454,12 +485,13 @@ fun SkipiiApp() {
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
+                .zIndex(3.4f)
                 .fillMaxWidth()
                 .height(navBottom + 130.dp)
                 .drawBehind { drawRect(vignette) },
         )
         // Swiping home from here never scrolls the page (the tab bar above still wins its taps).
-        BottomGestureGuard(Modifier.align(Alignment.BottomCenter))
+        BottomGestureGuard(Modifier.align(Alignment.BottomCenter).zIndex(3.4f))
 
         if (hasMini) {
             // Swipe up expands (the morph); swipe down follows the finger and, past a
@@ -473,6 +505,7 @@ fun SkipiiApp() {
                 showVideo = !showPlayer && !showFullscreen,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .zIndex(3.5f)
                     .padding(start = 16.dp, end = 16.dp, bottom = stackBottom + NavHeight + MiniGap)
                     .widthIn(max = MiniWidth)
                     // Fades as the video grows out of it; slides and fades as it's dismissed.
@@ -555,15 +588,24 @@ fun SkipiiApp() {
             mergedFraction = mergedFraction,
             onSelect = { selected ->
                 when {
-                    // Re-tapping the current tab: back out of a playlist, else scroll to top.
-                    selected == tab && openChannel != null -> openChannel = null
+                    // Re-tapping the current tab backs out of the page on top, else scrolls up.
+                    selected == tab && openDownloads -> openDownloads = false
+                    selected == tab && openHistory -> openHistory = false
                     selected == tab && openPlaylist != null -> openPlaylist = null
+                    selected == tab && openChannel != null -> openChannel = null
                     selected == tab && openChannels -> openChannels = false
                     selected == tab -> scrollToTop[selected] = (scrollToTop[selected] ?: 0) + 1
-                    else -> { openPlaylist = null; openChannel = null; openChannels = false; tab = selected }
+                    else -> {
+                        openDownloads = false
+                        openHistory = false
+                        openPlaylist = null
+                        openChannel = null
+                        openChannels = false
+                        tab = selected
+                    }
                 }
             },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = stackBottom),
+            modifier = Modifier.align(Alignment.BottomCenter).zIndex(3.5f).padding(start = 16.dp, end = 16.dp, bottom = stackBottom),
         )
 
         // The player morphs out of (and back into) the mini-player; see PlayerMorph.
@@ -592,10 +634,12 @@ fun SkipiiApp() {
             )
         }
         if (signingIn) {
-            SignInScreen(
-                onDone = { signingIn = false; lib.reset(); player.refreshAccountState() },
-                onCancel = { signingIn = false },
-            )
+            Box(Modifier.fillMaxSize().zIndex(5f)) {
+                SignInScreen(
+                    onDone = { signingIn = false; lib.reset(); player.refreshAccountState() },
+                    onCancel = { signingIn = false },
+                )
+            }
         }
 
         when (player.sheet) {
@@ -618,12 +662,16 @@ fun SkipiiApp() {
         }
         // Confirmations ("Added to queue") when the full player isn't showing its own.
         if (!showPlayer) {
-            QueueMessage(player, Modifier.align(Alignment.BottomCenter).padding(bottom = stackBottom + NavHeight + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 12.dp))
+            QueueMessage(
+                player,
+                Modifier.align(Alignment.BottomCenter).zIndex(3.6f)
+                    .padding(bottom = stackBottom + NavHeight + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 12.dp),
+            )
         }
         // Picture-in-picture: the window is just the video, over everything (kept composed
         // underneath, so expanding returns to exactly where things were).
         if (pip.active) {
-            Box(Modifier.fillMaxSize().background(Color.Black)) {
+            Box(Modifier.fillMaxSize().zIndex(6f).background(Color.Black)) {
                 sharedSurface(Modifier.fillMaxSize().aspectFit(player.videoAspect))
             }
         }

@@ -24,7 +24,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.History
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -122,30 +121,13 @@ fun DownloadsScreen(
             }
         }
         if (pendingRemoval.isNotEmpty()) {
-            val count = pendingRemoval.size
-            AlertDialog(
-                onDismissRequest = { pendingRemoval = emptySet() },
-                title = { Text(if (count == 1) "Remove download?" else "Remove $count downloads?") },
-                text = { Text("This deletes the saved file from Skipii. You can download it again when online.") },
-                confirmButton = {
-                    Text(
-                        "Remove",
-                        color = c.error,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.pressable {
-                            pendingRemoval.forEach { DownloadStore.remove(it) }
-                            pendingRemoval = emptySet()
-                            if (selecting) exitSelection()
-                        }.padding(12.dp),
-                    )
-                },
-                dismissButton = {
-                    Text(
-                        "Cancel",
-                        color = c.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.pressable { pendingRemoval = emptySet() }.padding(12.dp),
-                    )
+            RemoveDownloadDialog(
+                count = pendingRemoval.size,
+                onDismiss = { pendingRemoval = emptySet() },
+                onConfirm = {
+                    pendingRemoval.forEach { DownloadStore.remove(it) }
+                    pendingRemoval = emptySet()
+                    if (selecting) exitSelection()
                 },
             )
         }

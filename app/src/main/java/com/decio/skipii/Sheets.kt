@@ -81,6 +81,8 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
     var picking by remember { mutableStateOf(false) }
     // "Download" swaps the options for the quality list when the user wants to choose.
     var downloading by remember(video.id) { mutableStateOf(false) }
+    // The x/Downloaded row confirms before deleting a saved file.
+    var confirmRemove by remember(video.id) { mutableStateOf(false) }
     // Whether this video is already saved, so the row offers Remove rather than a duplicate add.
     var watchLater by remember(video.id) { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(video.id) {
@@ -142,14 +144,14 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
             tint = if (download != null) c.primary else null,
         ) {
             when {
-                download != null -> DownloadStore.remove(video.id)
+                download != null -> confirmRemove = true
                 !DownloadSettings.askEachTime -> {
                     DownloadStore.download(video, DownloadSettings.qualityHeight)
                     player.actionMessage = "Download started"
                 }
                 else -> downloading = true
             }
-            if (download != null || !DownloadSettings.askEachTime) onDismiss()
+            if (download == null && !DownloadSettings.askEachTime) onDismiss()
         }
         OptionRow(ImageVector.vectorResource(R.drawable.solar_close), "Not interested") {
             HiddenVideos.hide(video.id)
@@ -157,6 +159,17 @@ fun VideoOptionsSheet(video: VideoItem, player: PlayerState, onDismiss: () -> Un
             onDismiss()
         }
         Spacer(Modifier.height(24.dp))
+    }
+    if (confirmRemove) {
+        RemoveDownloadDialog(
+            count = 1,
+            onDismiss = { confirmRemove = false },
+            onConfirm = {
+                DownloadStore.remove(video.id)
+                confirmRemove = false
+                onDismiss()
+            },
+        )
     }
 }
 
